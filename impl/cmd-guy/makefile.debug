@@ -1,0 +1,21 @@
+OBJDIR = debug
+dummy_build_folder := $(shell mkdir -p $(OBJDIR))
+
+CFLAGS  += -DDEBUG -g -I. -Wall
+OFLAGS  = -O0
+
+OBJS= $(OBJDIR)/cb_main_argp.o
+
+
+
+all: $(OBJDIR)/minib
+
+.SILENT:
+	
+$(OBJDIR)/%.o: %.c
+	echo "  CC    $<"
+	$(CC) $(CFLAGS) $(OFLAGS) -c $< -o $@
+
+$(OBJDIR)/minib: cb_main.c $(OBJS)
+	echo   "  CC    mini-backup"
+	$(CC) $(CFLAGS) $(OFLAGS) cb_main.c -lm -o $@ $(OBJS)
