@@ -23,43 +23,76 @@ const struct argp_option options[] = {
     { 0 }
 };
 
-int cb_verify_args(struct arguments *arguments)
+int cb_main_argp_verify_args(struct cb_backup_ctx *arguments)
 {
-    if ( (arguments->method | CB_GET) == CB_GET )
+    if ( arguments->method == CB_GET )
+    {
+        //a category is necessary for a get, but a path is not (you can get the whole category)
+        if ( arguments->category == NULL )
+        {
+            return FAILURE;
+        }
+
+        return SUCCESS;
+    }
+
+    else if ( arguments->method == CB_PUT )
+    {
+        //both category and path are needed for a put
+        if ( arguments->category == NULL || arguments->path == NULL )
+        {
+            return FAILURE;
+        }
+
+        return SUCCESS;
+    }
+
+    else if ( arguments->method == CB_INFO )
+    {   
+        //if a path is specified, a category must be as well
+        if ( arguments->path != NULL && arguments->category == NULL )
+        {
+            return FAILURE;
+        }
+
+        //if info about drives is requested, then a path or category can't be requested
+        if ( arguments->num_drives != 0 || arguments->all_drives != 0 )
+        {
+            if (arguments->path == NULL || arguments->category == NULL)
+            {
+                return FAILURE;
+            }
+        }
+
+        return SUCCESS;
+    }
+
+    /*
+    TODO: Search and Config
+    */
+    else if ( arguments->method == CB_CONFIG )
     {
         return FAILURE;
     }
 
-    if ( (arguments->method | CB_PUT) == CB_PUT )
+    else if ( arguments->method == CB_SEARCH )
     {
         return FAILURE;
     }
 
-    if ( (arguments->method | CB_INFO) == CB_INFO )
+    else 
     {
         return FAILURE;
     }
-
-    if ( (arguments->method | CB_CONFIG) == CB_CONFIG )
-    {
-        return FAILURE;
-    }
-
-    if ( (arguments->method | CB_SEARCH) == CB_SEARCH )
-    {
-        return FAILURE;
-    }
-
-    return FAILURE;
 }
 
 
 /* Parse a single option. */
-error_t parse_opt (int key, char *arg, struct argp_state *state)
+error_t cb_main_argp_parse_opt (int key, char *arg, struct argp_state *state)
 {
   /* Get the input argument from argp_parse, which we
      know is a pointer to our arguments structure. */
-  struct arguments *arguments = state->input;
+  struct cb_backup_ctx *arguments = state->input;
 
   switch (key)
     {
@@ -87,7 +120,14 @@ error_t parse_opt (int key, char *arg, struct argp_state *state)
         }
         break;
     case CB_REF:
+        arguments->ref = 1;
         break;
+
+    /*
+    for now, only one method is allowed at a time.
+    But in future, it might be useful to allow for multiple
+    so the method flags are ORed together.
+    */
     case CB_OPT_GET:
         arguments->method |= CB_GET;
         break;

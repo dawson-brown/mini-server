@@ -7,15 +7,31 @@
 
 int tests_run = 0;
 
-static char * test_foo() 
+static char * test_cb_verify_args() 
 {
-    // mu_assert("error, foo != 7", foo == 7);
+    int ret;
+
+    struct cb_backup_ctx arguments = { 0 };
+    arguments.method |= CB_GET;
+    arguments.category = "music";
+    arguments.path = "/path/to/file";
+    ret = cb_main_argp_verify_args(&arguments);
+    mu_assert("error, cb_verify_args: 1", ret == SUCCESS);
+
+    memset(&arguments, 0, sizeof(struct cb_backup_ctx));
+    arguments.method |= CB_GET;
+    arguments.method |= CB_PUT;
+    arguments.category = "music";
+    arguments.path = "/path/to/file";
+    ret = cb_main_argp_verify_args(&arguments);
+    mu_assert("error, cb_verify_args: 2", ret == FAILURE);
+
     return 0;
 }
  
 static char * all_tests() 
 {
-    mu_run_test(test_foo);
+    mu_run_test(test_cb_verify_args);
     return 0;
  }
  

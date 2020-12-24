@@ -1,4 +1,4 @@
-OBJDIR = test
+OBJDIR = tests
 dummy_build_folder := $(shell mkdir -p $(OBJDIR))
 
 CFLAGS  += -I. -Wall

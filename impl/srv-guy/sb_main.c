@@ -2,43 +2,29 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "mb_main.h"
+#include "sb_net.h"
+#include "sb_main.h"
 
-#define MB_GET "get"
-#define MB_PUT "put"
-#define MB_INFO "info"
-#define MB_CONFIG "config"
+#define SB_BACKLOG 10
+#define SB_PORT "8080"
 
+void * sb_conn_handler(void * ctx)
+{
+    return NULL;
+}
 
 int main(int argc, char ** argv)
 {   
-    if (strcmp("help", argv[1]) == 0 || argc < 2)
-    {
-        printf("Usage\n");
-    }
+    struct sb_net_server_info server_info;
+    server_info.addr = NULL;
+    server_info.port = SB_PORT;
+    server_info.addr_family = AF_UNSPEC;
+    server_info.addr_flags = AI_PASSIVE;
+    server_info.addr_socktype = SOCK_STREAM;
+    server_info.conn_backlog = SB_BACKLOG;
+    server_info.max_handlers = 10;
 
-    if (strcmp(MB_GET, argv[1]) == 0)
-    {
-
-    }
-    else if (strcmp(MB_PUT, argv[1]) == 0)
-    {
-
-    } 
-    else if (strcmp(MB_INFO, argv[1]) == 0)
-    {
-
-    } 
-    else if (strcmp(MB_CONFIG, argv[1]) == 0)
-    {
-
-    }
-    else 
-    {
-        
-    }
-
-    printf("Goodbye.\n");
+    sb_net_server(&server_info, sb_conn_handler, NULL, 0);
     return 0;
 
 }

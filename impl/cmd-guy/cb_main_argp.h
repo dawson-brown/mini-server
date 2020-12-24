@@ -3,6 +3,11 @@
 #include <stdlib.h>
 #include <argp.h>
 
+#ifndef CB_CTX
+#include "cb_backup_ctx.h"
+#define CB_CTX
+#endif
+
 #define CB_MAX_DRIVES 4
 
 enum cb_main_ret 
@@ -47,18 +52,6 @@ enum cb_method_flags
 
 extern const struct argp_option options[];
 
-/* Used by main to communicate with parse_opt. */
-struct arguments
-{               
-  int method;
-  char *category;
-  char *path;
-  int all_drives;
-  int num_drives;
-  char *drives[4];
-  int ref;
-};
+int cb_main_argp_verify_args(struct cb_backup_ctx *arguments);
 
-int cb_verify_args(struct arguments *arguments);
-
-error_t parse_opt (int key, char *arg, struct argp_state *state);
+error_t cb_main_argp_parse_opt (int key, char *arg, struct argp_state *state);
