@@ -8,3 +8,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+struct thread_tracker 
+{
+    pthread_t * thread_ids;
+    int * pipes_out;
+    int * pipes_in;
+    int len;
+};

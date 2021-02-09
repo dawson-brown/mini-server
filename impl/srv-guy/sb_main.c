@@ -23,8 +23,17 @@ int main(int argc, char ** argv)
     server_info.addr_socktype = SOCK_STREAM;
     server_info.conn_backlog = SB_BACKLOG;
     server_info.max_handlers = 10;
+    server_info.min_handlers = 1;
 
-    sb_net_server(&server_info, sb_conn_handler, NULL, 0);
+    int ret;
+    if ( ( ret = sb_net_socket_setup(&server_info) ) != SB_SUCCESS )
+    {
+        printf("sb_net_server failed...\n");
+        exit(1);
+    }
+
+    sb_net_accept_conn(&server_info, sb_conn_handler);
+
     return 0;
 
 }

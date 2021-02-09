@@ -23,23 +23,27 @@ static void * sb_net_set_arg(int conn_fd, struct sockaddr_storage * client_addr,
     return arg;
 }
 
-int sb_net_server(struct sb_net_server_info * server_info, void *(*conn_handler) (void *), void * common_arg, int sizeof_arg)
+static void *get_in_addr(struct sockaddr *sa)
+{
+    if (sa->sa_family == AF_INET) 
+    {
+        return &(((struct sockaddr_in*)sa)->sin_addr);
+    }
+
+    return &(((struct sockaddr_in6*)sa)->sin6_addr);
+}
+
+int sb_net_socket_setup(struct sb_net_server_info * server_info)
 {
     int sock_fd;
-    int conn_fd;
     int ret;
     int reusable=1;
-    socklen_t sin_size;
     // struct sigaction sa;
-    char s[INET6_ADDRSTRLEN];
-    void * arg;
-
     struct addrinfo hints, *servinfo, *p;
-    struct sockaddr_storage client_addr;
 
     /*
     TODO: make server compatible with RAW
-    for now SOCK_STREAM and DGRAM only
+    for now STREAM and DGRAM only
     */
     memset(&hints, 0, sizeof hints);
     hints.ai_family = server_info->addr_family;
@@ -59,7 +63,7 @@ int sb_net_server(struct sb_net_server_info * server_info, void *(*conn_handler)
     */
     if ((ret = getaddrinfo(NULL, server_info->port, &hints, &servinfo)) != 0) {
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(ret));
-        return 1;
+        return SB_ERR_GETADDRINFO;
     }
 
     for(p = servinfo; p != NULL; p = p->ai_next) 
@@ -79,7 +83,7 @@ int sb_net_server(struct sb_net_server_info * server_info, void *(*conn_handler)
         if (setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &reusable, sizeof(int)) == -1) 
         {
             perror("setsockopt");
-            exit(1);
+            return SB_ERR_SETSOCKOPT;
         }
 
         /*
@@ -105,42 +109,117 @@ int sb_net_server(struct sb_net_server_info * server_info, void *(*conn_handler)
     if (p == NULL) 
     {
         fprintf(stderr, "server: failed to bind\n");
-        exit(1);
+        return SB_ERR_BIND;
     }
 
-    if (server_info->addr_socktype == SOCK_STREAM)
+    server_info->sock_fd = sock_fd;
+    return SB_SUCCESS;
+
+}
+
+int sb_net_accept_conn(struct sb_net_server_info * server_info, 
+                        void *(*conn_handler) (void *))
+{
+    int sock_fd = server_info->sock_fd;
+    int conn_fd;
+    struct sockaddr_storage client_addr;
+    socklen_t sin_size;
+    char s[INET6_ADDRSTRLEN];
+    
+    if (listen(sock_fd, server_info->conn_backlog) == -1) 
     {
-        if (listen(sock_fd, server_info->conn_backlog) == -1) 
+        perror("listen");
+        return SB_ERR_LISTEN;
+    }
+    printf("server: waiting for connections...\n");
+
+    /*
+    see pipe and poll:
+        https://stackoverflow.com/questions/25876805/c-how-to-make-threads-communicate-with-each-other
+        https://man7.org/linux/man-pages/man2/pipe.2.html
+        https://man7.org/linux/man-pages/man7/pipe.7.html
+        https://man7.org/linux/man-pages/man2/poll.2.html
+
+    there should be two distinct functions here--the connection handler that receives incoming data and
+    a user defined function to handle the data. The connection handler is defined as part of this sb_net
+    library. The connection handler passes the data to the user defined handler.
+
+    For each thread, there will be 2 pipes--one to the thread and one to this accept function. Server info will 
+    have a min and max number of threads set. This function will always maintain the min number of threads
+    and will fire up to the max number of threads as needed. The threads will send a message to this function to
+    say they can handle a connection, this function will poll those descriptors and will send incoming connections
+    only to those threads that are ready. When the threads are first setup they say they're ready and when they finish
+    a connection they'll say they're ready. It will remain in this 'send to existing thread' mode until it hits a point 
+    that there are no available threads. Then it will create a single new thread for the new connection and add 
+    that thread to descriptors/pipes being polled/maintained. It will then revert back to 'poll mode'--this should of 
+    course return the new thread (and maybe others) if the new thread was setup right.
+
+    (the last two sentences above might be bad. This function might get scheduled before the new thread does and so the
+    new thread won't have sent its 'im ready' message yet. Maybe there should be an op_mode to the ctx and its possible
+    to send the conn_fd as an argument to the thread when its created, and if a conn_fd is sent, that thread won't send its ready
+    message until after its done with that argument fd.)
+
+    If there comes a point when poll returns descriptors that are ready, but there are no waiting connections and 
+    more than min threads are open, send 'close' messages to one of the threads and poll again. If there are still no
+    connections and still more than min threads, close another. Keep doing this, one at a time, until there are min 
+    threads. There will have to be a simple counter for the number of open threads.
+
+    */
+
+    //min threads setup;
+    pthread_t thread_ids[server_info->max_handlers];
+    int pipes_in[server_info->max_handlers];
+    int pipes_out[server_info->max_handlers];
+    struct thread_tracker threads = {thread_ids, pipes_out, pipes_in, server_info->max_handlers};
+
+    int pipe_in[2];
+    int pipe_out[2];
+
+    for (int i=0; i<threads.len; i++)
+    {
+        if (pipe(pipe_in) == -1 || pipe(pipe_out) == -1 )
         {
-            perror("listen");
+            perror("pipe");
             exit(1);
         }
-        printf("server: waiting for connections...\n");
+    
+        struct sb_net_handler_ctx * ctx = malloc(sizeof(struct sb_net_handler_ctx)); 
+        ctx->client_addr = client_addr;
 
+        //setup pipes--this can probably be a function
+        ctx->in_pipe = pipe_out[0];
+        threads.pipes_out[i] = pipe_out[1];
 
-        while(1) 
-        {
-            sin_size = sizeof(client_addr);
-            conn_fd = accept(sock_fd, (struct sockaddr *)&client_addr, &sin_size);
+        ctx->out_pipe = pipe_in[1];
+        threads.pipes_in[i] = pipe_in[0];
 
-            if (conn_fd == -1) {
-                perror("accept");
-                continue;
-            }
-            inet_ntop(client_addr.ss_family, get_in_addr((struct sockaddr *)&client_addr), s, sizeof(s) );
-            printf("server: got connection from %s\n", s);
-
-            arg = sb_net_set_arg(sock_fd, &client_addr, common_arg, sizeof_arg);
-
-            pthread_t thread;;
-            int thread = pthread_create(&thread, NULL, conn_handler, arg);
-        }
+        int thread = pthread_create(&threads.thread_ids[i], NULL, conn_handler, &ctx);
     }
-    else 
+    
+    while(1)
+     /*
+    rework this loop. Must add loop to add min threads.
+    When accept is called and conn_fd is set, send conn_fd as a pipe argument
+    */
     {
-        printf("listener: waiting to recvfrom...\n");
-        arg = sb_net_set_arg(sock_fd, &client_addr, common_arg, sizeof_arg);
+        sin_size = sizeof(client_addr);
+        conn_fd = accept(sock_fd, (struct sockaddr *)&client_addr, &sin_size);
 
-        conn_handler(arg);
+        if (conn_fd == -1) 
+        {
+            perror("accept");
+            continue;
+        }
+        inet_ntop(client_addr.ss_family, get_in_addr((struct sockaddr *)&client_addr), s, sizeof(s) );
+        printf("server: got connection from %s\n", s);
+
+        //pass connections;
+        //poll for ready threads;
     }
+}
+
+void * sb_net_recv(void * ctx)
+{
+    struct sb_net_handler_ctx * conn_ctx = (struct sb_net_handler_ctx *)ctx;
+    return NULL;
 }
