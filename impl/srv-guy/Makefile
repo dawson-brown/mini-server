@@ -8,8 +8,8 @@ release:
 	make -f makefile.release
 
 clean-test:
-	rm tests/*.o
-	rm tests/tests
+	rm test/*.o
+	rm test/test
 
 clean-debug:
 	rm -rf debug/
