@@ -8,9 +8,14 @@
 #define SB_BACKLOG 10
 #define SB_PORT "8080"
 
-void * sb_conn_handler(void * ctx)
+ssize_t sb_recv(int socket, void * buf, size_t n, int flags) 
 {
-    return NULL;
+    return 0;
+}
+
+ssize_t sb_send(int socket, void * buf, size_t n, int flags) 
+{
+    return 0;
 }
 
 int main(int argc, char ** argv)
@@ -32,7 +37,7 @@ int main(int argc, char ** argv)
         exit(1);
     }
 
-    sb_net_accept_conn(&server_info, sb_conn_handler);
+    sb_net_accept_conn(&server_info, sb_recv, sb_send);
 
     return 0;
 

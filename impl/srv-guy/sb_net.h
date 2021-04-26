@@ -2,6 +2,7 @@
 #include <netdb.h>
 #include <signal.h>
 #include <errno.h>
+#include <poll.h>
 
 
 enum sb_net_returns
@@ -11,6 +12,17 @@ enum sb_net_returns
     SB_ERR_SETSOCKOPT,
     SB_ERR_BIND,
     SB_ERR_LISTEN
+};
+
+enum sb_net_in_msgs
+{
+    SB_READY,
+    SB_CLOSED_ON_ERR
+};
+
+enum sb_net_out_msgs
+{
+    SB_CLOSE
 };
 
 struct sb_net_server_info
@@ -32,9 +44,13 @@ struct sb_net_handler_ctx
     int in_pipe;
     int out_pipe;
     struct sockaddr_storage client_addr;
+    ssize_t ( *recv )(int, void *, size_t, int); //a (custom) recv function with same signature as recv
+    ssize_t ( *send )(int, void *, size_t, int); //a (custom) send function with same signature as send
+    
 };
 
 int sb_net_socket_setup(struct sb_net_server_info * server_info);
 
 int sb_net_accept_conn(struct sb_net_server_info * server_info,
-                        void *(*conn_handler) (void *));
+                        ssize_t ( *recv )(int, void *, size_t, int),
+                        ssize_t ( *send )(int, void *, size_t, int));

@@ -12,7 +12,7 @@
 struct thread_tracker 
 {
     pthread_t * thread_ids;
-    int * pipes_out;
-    int * pipes_in;
+    struct pollfd * pipes_out;
+    struct pollfd * pipes_in;
     int len;
 };

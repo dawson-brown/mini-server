@@ -1,0 +1,19 @@
+OBJDIR = debug
+dummy_build_folder := $(shell mkdir -p $(OBJDIR))
+
+CFLAGS  += -DDEBUG -g -pthread -I. -D_FILE_OFFSET_BITS=64 -Wall
+OFLAGS  = -O0
+
+OBJS= $(OBJDIR)/sb_net.o
+
+all: $(OBJDIR)/sb_main
+
+.SILENT:
+	
+$(OBJDIR)/%.o: %.c
+	echo "  CC    $<"
+	$(CC) $(CFLAGS) $(OFLAGS) -c $< -o $@
+
+$(OBJDIR)/sb_main: sb_main.c $(OBJS)
+	echo   "  CC    sb_main"
+	$(CC) $(CFLAGS) $(OFLAGS) sb_main.c -lm -o $@ $(OBJS)
