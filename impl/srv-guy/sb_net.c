@@ -26,19 +26,12 @@
 /***********************************************************
  * Static functions: start
  **********************************************************/
-
-inline static void swap_fds(struct pollfd * a, struct pollfd * b)
+inline static void swap_n_bytes(void * a, void * b, int n)
 {
-    struct pollfd tmp = *a;
-    memcpy(a, b, sizeof(struct pollfd));
-    memcpy(b, &tmp, sizeof(struct pollfd));
-}
-
-inline static void swap_pthreads(pthread_t * a, pthread_t * b)
-{
-    pthread_t tmp = *a;
-    memcpy(a, b, sizeof(pthread_t));
-    memcpy(b, &tmp, sizeof(pthread_t));
+    unsigned char tmp[n];
+    memcpy(tmp, a, n);
+    memcpy(a, b, n);
+    memcpy(b, &tmp, n);
 }
 
 static void *get_in_addr(struct sockaddr *sa)
@@ -348,9 +341,9 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
             else 
             {
                 //make sure in, out and threads remain lined up with eachother.
-                swap_fds(&pipes_in[i], &pipes_in[threads.len-1]);
-                swap_fds(&pipes_out[i], &pipes_out[threads.len-1]);
-                swap_pthreads(&thread_ids[i], &thread_ids[threads.len-1]);
+                swap_n_bytes(&pipes_in[i], &pipes_in[threads.len-1], sizeof(struct pollfd));
+                swap_n_bytes(&pipes_out[i], &pipes_out[threads.len-1], sizeof(struct pollfd));
+                swap_n_bytes(&thread_ids[i], &thread_ids[threads.len-1], sizeof(pthread_t));
             }
         }
 
@@ -370,9 +363,10 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
             }
             else
             {
-                swap_fds(&pipes_in[i], &pipes_in[ready_threads-1]);
-                swap_fds(&pipes_out[i], &pipes_out[ready_threads-1]);
-                swap_pthreads(&thread_ids[i], &thread_ids[ready_threads-1]);
+                swap_n_bytes(&pipes_in[i], &pipes_in[ready_threads-1], sizeof(struct pollfd));
+                swap_n_bytes(&pipes_out[i], &pipes_out[ready_threads-1], sizeof(struct pollfd));
+                swap_n_bytes(&thread_ids[i], &thread_ids[ready_threads-1], sizeof(pthread_t));
+                
                 ready_threads-=1;
                 ready-=1;
                 if (msg == SB_CLOSED_ON_ERR)
