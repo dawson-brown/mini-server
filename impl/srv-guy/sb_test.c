@@ -15,14 +15,28 @@ MU_TEST(test_sb_net_socket_setup) {
 	mu_check(0 == 0);
 }
 
-MU_TEST(test_swap_fds) {
-    /* TODO */
-	mu_check(0 == 0);
-}
+#define LIST_LEN 6
+MU_TEST(test_swap_n_bytes) {
 
-MU_TEST(test_swap_pthreads) {
-    /* TODO */
-	mu_check(0 == 0);
+	int list[LIST_LEN] = {0, 1, 1, 0, 1 ,0};
+	int i=0;
+	int ready=3;
+	int ready_count = 0;
+	while (ready_count < ready)
+	{
+		if (list[i]==0){
+			swap_n_bytes(&list[i], &list[ready_count], sizeof(int));
+			ready_count++;
+		}
+		i++;
+	}
+
+	mu_check(list[0] == 0);
+	mu_check(list[1] == 0);
+	mu_check(list[2] == 0);
+	mu_check(list[3] == 1);
+	mu_check(list[4] == 1);
+	mu_check(list[5] == 1);
 }
 
 MU_TEST(test_get_in_addr) {
@@ -39,8 +53,7 @@ MU_TEST_SUITE(sb_net_test_suite) {
 	MU_SUITE_CONFIGURE(&test_setup, &test_teardown);
 
 	MU_RUN_TEST(test_sb_net_socket_setup);
-	MU_RUN_TEST(test_swap_fds);
-	MU_RUN_TEST(test_swap_pthreads);
+	MU_RUN_TEST(test_swap_n_bytes);
 	MU_RUN_TEST(test_get_in_addr);
 	MU_RUN_TEST(test_safe_close);
 }

@@ -11,7 +11,10 @@
 
 # Executables
 minib
-tests
+sb_main
+test/
+debug/
+release/
 
 # Debug files
 *.dSYM/
