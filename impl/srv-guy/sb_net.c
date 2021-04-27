@@ -310,7 +310,7 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
     
     int i;
     int ready;
-    int ready_threads;
+    int ready_count;
     int msg;
     while(1)
     /*
@@ -323,52 +323,47 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
         //the ready threads will be the out pipes that can be written to. --so for each ready thread, copy the correct out pipe to the ready array 
         //remember: when doing the swapping to the back thing when iterating over poll results, make sure to keep the out pipes, in pipes, and threads inline. 
 
-        i = 0;
-        ready = poll(pipes_in, threads.len, 0);
-        ready_threads = 0;
-
         /**
          * see which pipes can be read from--put all ready in front of pollfds
-        */ 
-        while (ready)
+        */
+        i = 0;
+        ready = poll(pipes_in, threads.len, 0);
+        ready_count = 0;
+        while (ready_count < ready)
         {
-            if (pipes_in[i].revents & POLLIN)
-            {
-                i++;
-                ready--;
-                ready_threads++;
-            } 
-            else 
-            {
-                //make sure in, out and threads remain lined up with eachother.
-                swap_n_bytes(&pipes_in[i], &pipes_in[threads.len-1], sizeof(struct pollfd));
-                swap_n_bytes(&pipes_out[i], &pipes_out[threads.len-1], sizeof(struct pollfd));
-                swap_n_bytes(&thread_ids[i], &thread_ids[threads.len-1], sizeof(pthread_t));
+            if (pipes_in[i].revents & POLLIN){
+                swap_n_bytes(&pipes_in[i], &pipes_in[ready_count], sizeof(struct pollfd));
+                swap_n_bytes(&pipes_out[i], &pipes_out[ready_count], sizeof(struct pollfd));
+                swap_n_bytes(&thread_ids[i], &thread_ids[ready_count], sizeof(pthread_t));
+                ready_count++;
             }
-        }
+            i++;
+        } 
 
         //read from each ready pipe to see which thread sent the 
-        //I'm ready message (SB_READY)
+        // "I'm ready" message (SB_READY)
         i=0;
-        ready = ready_threads;
-        while (ready)
+        ready = ready_count;
+        ready_count = 0;
+        while (i<ready)
         {
             len = read(pipes_in[i].fd, &msg, sizeof(int));
+            if (len == -1)
+            {
+                /* TODO: handle read error */
+                perror("read");
+                exit(0);
+            }
 
             if (msg == SB_READY)
             {
-                i++;
-                ready--;
-                continue;
+                swap_n_bytes(&pipes_in[i], &pipes_in[ready_count], sizeof(struct pollfd));
+                swap_n_bytes(&pipes_out[i], &pipes_out[ready_count], sizeof(struct pollfd));
+                swap_n_bytes(&thread_ids[i], &thread_ids[ready_count], sizeof(pthread_t));
+                ready_count++;
             }
             else
             {
-                swap_n_bytes(&pipes_in[i], &pipes_in[ready_threads-1], sizeof(struct pollfd));
-                swap_n_bytes(&pipes_out[i], &pipes_out[ready_threads-1], sizeof(struct pollfd));
-                swap_n_bytes(&thread_ids[i], &thread_ids[ready_threads-1], sizeof(pthread_t));
-                
-                ready_threads-=1;
-                ready-=1;
                 if (msg == SB_CLOSED_ON_ERR)
                 {
                     threads.len-=1;
@@ -380,11 +375,12 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
                     }
                 }
             }
+            i++;
         }
 
         //TODO: if there are no ready threads, fire up another thread
 
-        while (ready_threads)
+        while (ready_count)
         {
             //TODO: add timeout on sock_fd--if no incoming connection,
             //then its fine to check if any threads have become ready while waiting.
@@ -401,8 +397,8 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
 
             //pass connections to pipes_out (pass to ready_threads-1);
             //decrement ready_threads
-            len = write(pipes_out[ready_threads-1].fd, &conn_fd, sizeof(int));
-            ready_threads--;
+            len = write(pipes_out[ready_count-1].fd, &conn_fd, sizeof(int));
+            ready_count--;
             if (len == -1)
             {
                 //TODO: handle errors
