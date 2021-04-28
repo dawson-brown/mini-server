@@ -39,6 +39,54 @@ MU_TEST(test_swap_n_bytes) {
 	mu_check(list[5] == 1);
 }
 
+#define LIST_LEN_2 8
+MU_TEST(test_swap_n_bytes_2_passes) {
+
+	int list[LIST_LEN_2] = {1, 2, 1, 0, 0, 2, 1, 0};
+	int i=0;
+	int ready=5;
+	int ready_count = 0;
+	while (ready_count < ready)
+	{
+		if (list[i]){
+			swap_n_bytes(&list[i], &list[ready_count], sizeof(int));
+			ready_count++;
+		}
+		i++;
+	}
+
+	for (int j=0; j<LIST_LEN_2; j++){
+		printf("%d, ", list[j]);
+	}
+	printf("\n");
+
+	i=0;
+	ready = ready_count;
+	ready_count = 0;
+	while (i<ready)
+	{
+		if (list[i] == 1){
+			swap_n_bytes(&list[i], &list[ready_count], sizeof(int));
+			ready_count++;
+		}
+		i++;
+	}
+
+	for (int j=0; j<LIST_LEN_2; j++){
+		printf("%d, ", list[j]);
+	}
+	printf("\n");
+
+	mu_check(list[0] == 1);
+	mu_check(list[1] == 1);
+	mu_check(list[2] == 1);
+	mu_check(list[3] == 2);
+	mu_check(list[4] == 2);
+	mu_check(list[5] == 0);
+	mu_check(list[6] == 0);
+	mu_check(list[7] == 0);
+}
+
 MU_TEST(test_get_in_addr) {
     /* TODO */
 	mu_check(0 == 0);
@@ -54,6 +102,7 @@ MU_TEST_SUITE(sb_net_test_suite) {
 
 	MU_RUN_TEST(test_sb_net_socket_setup);
 	MU_RUN_TEST(test_swap_n_bytes);
+	MU_RUN_TEST(test_swap_n_bytes_2_passes);
 	MU_RUN_TEST(test_get_in_addr);
 	MU_RUN_TEST(test_safe_close);
 }

@@ -1,4 +1,5 @@
 #include <sys/socket.h>
+#include <pthread.h>
 #include <netdb.h>
 #include <signal.h>
 #include <errno.h>
@@ -36,6 +37,10 @@ struct sb_net_server_info
     int conn_backlog;
     int min_handlers;
     int max_handlers;
+    int len;
+    pthread_t * thread_ids;
+    struct pollfd * pipes_in;
+    struct pollfd * pipes_out;
 };
 
 struct sb_net_handler_ctx

@@ -204,7 +204,7 @@ void * sb_net_thread(void * ctx)
     return NULL;
 }
 
-struct sb_net_handler_ctx * sb_setup_threads(struct thread_tracker * threads, int threads_i)
+struct sb_net_handler_ctx * sb_setup_threads(struct sb_net_server_info * server, int threads_i)
 {
     int pipe_in[2];
     int pipe_out[2];
@@ -218,15 +218,15 @@ struct sb_net_handler_ctx * sb_setup_threads(struct thread_tracker * threads, in
     struct sb_net_handler_ctx * ctx = malloc(sizeof(struct sb_net_handler_ctx)); 
 
     ctx->in_pipe = pipe_out[0];
-    threads->pipes_out[threads_i].fd = pipe_out[1];
-    threads->pipes_out[threads_i].events = POLLIN;
+    server->pipes_out[threads_i].fd = pipe_out[1];
+    server->pipes_out[threads_i].events = POLLIN;
 
     ctx->out_pipe = pipe_in[1];
-    threads->pipes_in[threads_i].fd = pipe_in[0];
-    threads->pipes_in[threads_i].events = POLLIN;
+    server->pipes_in[threads_i].fd = pipe_in[0];
+    server->pipes_in[threads_i].events = POLLIN;
 
     printf("sb_setup_threads - ctx: in:%d, out:%d\n", ctx->in_pipe, ctx->out_pipe);
-    printf("sb_setup_threads - thread: in:%d, out:%d\n", threads->pipes_in[threads_i].fd, threads->pipes_out[threads_i].fd);
+    printf("sb_setup_threads - thread: in:%d, out:%d\n", server->pipes_in[threads_i].fd, server->pipes_out[threads_i].fd);
 
     return ctx;
 }
@@ -288,11 +288,14 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
     pthread_t thread_ids[server_info->max_handlers];
     struct pollfd pipes_in[server_info->max_handlers];
     struct pollfd pipes_out[server_info->max_handlers];
-    struct thread_tracker threads = {thread_ids, pipes_out, pipes_in, server_info->min_handlers};
+    server_info->thread_ids = thread_ids;
+    server_info->pipes_in = pipes_in;
+    server_info->pipes_out = pipes_out;
+    server_info->len = server_info->min_handlers;
 
-    for (int i=0; i<threads.len; i++)
+    for (int i=0; i<server_info->len; i++)
     {    
-        struct sb_net_handler_ctx * ctx = sb_setup_threads(&threads, i); 
+        struct sb_net_handler_ctx * ctx = sb_setup_threads(server_info, i); 
         if (ctx == NULL)
         {
             exit(1);
@@ -301,7 +304,7 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
         ctx->recv = custom_recv;
         ctx->send = custom_send;
         printf("sb_net_accept_conn - ctx: in:%d, out:%d\n", ctx->in_pipe, ctx->out_pipe);
-        ret = pthread_create(&threads.thread_ids[i], NULL, sb_net_thread, ctx);
+        ret = pthread_create(&server_info->thread_ids[i], NULL, sb_net_thread, ctx);
         if (ret != 0)
         {
             printf("sb_net_accept_conn - pthread_create: %d\n", ret);
@@ -310,8 +313,10 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
     
     int i;
     int ready;
-    int ready_count;
+    int thread_count;
+    int pipe_count;
     int msg;
+    int thread_err;
     while(1)
     /*
     When accept is called and conn_fd is set, send conn_fd as a pipe argument
@@ -327,15 +332,15 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
          * see which pipes can be read from--put all ready in front of pollfds
         */
         i = 0;
-        ready = poll(pipes_in, threads.len, 0);
-        ready_count = 0;
-        while (ready_count < ready)
+        ready = poll(pipes_in, server_info->len, 0);
+        pipe_count = 0;
+        while (pipe_count < ready)
         {
             if (pipes_in[i].revents & POLLIN){
-                swap_n_bytes(&pipes_in[i], &pipes_in[ready_count], sizeof(struct pollfd));
-                swap_n_bytes(&pipes_out[i], &pipes_out[ready_count], sizeof(struct pollfd));
-                swap_n_bytes(&thread_ids[i], &thread_ids[ready_count], sizeof(pthread_t));
-                ready_count++;
+                swap_n_bytes(&pipes_in[i], &pipes_in[pipe_count], sizeof(struct pollfd));
+                swap_n_bytes(&pipes_out[i], &pipes_out[pipe_count], sizeof(struct pollfd));
+                swap_n_bytes(&thread_ids[i], &thread_ids[pipe_count], sizeof(pthread_t));
+                pipe_count++;
             }
             i++;
         } 
@@ -343,8 +348,9 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
         //read from each ready pipe to see which thread sent the 
         // "I'm ready" message (SB_READY)
         i=0;
-        ready = ready_count;
-        ready_count = 0;
+        ready = pipe_count;
+        thread_count = 0;
+        thread_err = 0;
         while (i<ready)
         {
             len = read(pipes_in[i].fd, &msg, sizeof(int));
@@ -357,30 +363,26 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
 
             if (msg == SB_READY)
             {
-                swap_n_bytes(&pipes_in[i], &pipes_in[ready_count], sizeof(struct pollfd));
-                swap_n_bytes(&pipes_out[i], &pipes_out[ready_count], sizeof(struct pollfd));
-                swap_n_bytes(&thread_ids[i], &thread_ids[ready_count], sizeof(pthread_t));
-                ready_count++;
-            }
-            else
-            {
-                if (msg == SB_CLOSED_ON_ERR)
-                {
-                    threads.len-=1;
-                    if (threads.len < server_info->min_handlers)
-                    {
-                        //TODO:
-                        //fire up new thread at position: ready_threads-1
-                        //will use same ctx as the one that crashed--ie set the pipes appropriately.
-                    }
-                }
+                swap_n_bytes(&pipes_in[i], &pipes_in[thread_count], sizeof(struct pollfd));
+                swap_n_bytes(&pipes_out[i], &pipes_out[thread_count], sizeof(struct pollfd));
+                swap_n_bytes(&thread_ids[i], &thread_ids[thread_count], sizeof(pthread_t));
+                thread_count++;
             }
             i++;
         }
 
-        //TODO: if there are no ready threads, fire up another thread
+        if (thread_count != pipe_count)
+        {
+            //TODO: handle errors
+            //if above condition is true, a thread sent a message other than SB_READY
+        }
 
-        while (ready_count)
+        if (thread_count==0)
+        {
+            //TODO: handle case when no threads are ready
+        }
+
+        while (thread_count)
         {
             //TODO: add timeout on sock_fd--if no incoming connection,
             //then its fine to check if any threads have become ready while waiting.
@@ -397,8 +399,8 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
 
             //pass connections to pipes_out (pass to ready_threads-1);
             //decrement ready_threads
-            len = write(pipes_out[ready_count-1].fd, &conn_fd, sizeof(int));
-            ready_count--;
+            len = write(pipes_out[thread_count-1].fd, &conn_fd, sizeof(int));
+            thread_count--;
             if (len == -1)
             {
                 //TODO: handle errors
