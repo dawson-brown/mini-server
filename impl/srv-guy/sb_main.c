@@ -18,27 +18,33 @@ ssize_t sb_send(int socket, void * buf, size_t n, int flags)
     return 0;
 }
 
+ssize_t sb_req_processor(char * req, ssize_t req_len, char * res, ssize_t res_len)
+{
+    return 0;
+}
+
 int main(int argc, char ** argv)
 {   
-    struct sb_net_server_info server_info;
-    server_info.addr = NULL;
-    server_info.port = SB_PORT;
-    server_info.addr_family = AF_UNSPEC;
-    server_info.addr_flags = AI_PASSIVE;
-    server_info.addr_socktype = SOCK_STREAM;
-    server_info.conn_backlog = SB_BACKLOG;
-    server_info.max_handlers = 10;
-    server_info.min_handlers = 1;
+    struct sb_net_server_info * server_info = sb_net_server_info_setup(
+		SB_PORT,
+		AF_UNSPEC,
+		AI_PASSIVE,
+		SOCK_STREAM,
+		SB_BACKLOG,
+		10,
+		1
+	);
 
     int ret;
-    if ( ( ret = sb_net_socket_setup(&server_info) ) != SB_SUCCESS )
+    if ( ( ret = sb_net_socket_setup(server_info) ) != SB_SUCCESS )
     {
         printf("sb_net_server failed...\n");
         exit(1);
     }
 
-    sb_net_accept_conn(&server_info, sb_recv, sb_send);
+    sb_net_accept_conn(&server_info, sb_recv, sb_send, sb_req_processor);
 
+    free(server_info);
     return 0;
 
 }

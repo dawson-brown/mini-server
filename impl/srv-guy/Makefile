@@ -15,5 +15,4 @@ clean-debug:
 	rm -rf debug/
 
 clean-release:
-
 	rm -rf release/

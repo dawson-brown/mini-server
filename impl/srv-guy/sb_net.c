@@ -1,27 +1,7 @@
 #include "sb_net.h"
 #include "sb_net_internal.h"
 
-// static void * sb_net_set_arg(int conn_fd, struct sockaddr_storage * client_addr, void * common_arg, int sizeof_arg)
-// {
-//     void * arg;
-//     /*
-//     TODO: check that malloc doesn't fail
-//     */
-//     if (common_arg == NULL)
-//     {
-//         arg = malloc( sizeof(struct sb_net_handler_ctx) );
-//     }
-//     else
-//     {
-//         arg = malloc( sizeof(struct sb_net_handler_ctx) + sizeof_arg );
-//         memcpy(arg+sizeof(struct sb_net_handler_ctx), common_arg, sizeof_arg);
-//     }
-//     struct sb_net_handler_ctx * ctx = (struct sb_net_handler_ctx *) arg;
-//     ctx->sock_fd = conn_fd;
-//     ctx->client_addr = *client_addr;
-
-//     return arg;
-// }
+#define SB_DEFAULT_BUFFER 256
 
 /***********************************************************
  * Static functions: start
@@ -72,12 +52,109 @@ static void safe_close(int socket)
     }
 }
 
-/***********************************************************
- * Static functions: end
- **********************************************************/
+static struct sb_net_handler_ctx * sb_setup_thread_pipes(struct sb_net_server_info * server, int threads_i)
+{
+    int pipe_in[2];
+    int pipe_out[2];
 
+    if (pipe(pipe_in) == -1 || pipe(pipe_out) == -1 )
+    {
+        perror("pipe");
+        return NULL;
+    }
+    
+    struct sb_net_handler_ctx * ctx = malloc(sizeof(struct sb_net_handler_ctx)); 
 
-int sb_net_socket_setup(struct sb_net_server_info * server_info)
+    ctx->in_pipe = pipe_out[0];
+    server->pipes_out[threads_i].fd = pipe_out[1];
+    server->pipes_out[threads_i].events = POLLIN;
+
+    ctx->out_pipe = pipe_in[1];
+    server->pipes_in[threads_i].fd = pipe_in[0];
+    server->pipes_in[threads_i].events = POLLIN;
+
+    return ctx;
+}
+
+static void * sb_net_thread(void * ctx)
+{   
+    /*
+    when started, check that sockfd is below zero
+        - if so, send message to main loop saying you're ready.
+        - otherwise deal with sockfd (which is open connection)
+    */
+    struct sb_net_handler_ctx * conn_ctx = (struct sb_net_handler_ctx *)ctx;
+    ssize_t len;
+
+    if (conn_ctx->sock_fd == -1)
+    {
+        int ready_msg = SB_READY;
+        len = write(conn_ctx->out_pipe, &ready_msg, sizeof(int));
+        if (len == -1)
+        {
+            perror("sb_net_thread - write");
+        }
+    }
+
+    char * req_buffer = malloc(SB_DEFAULT_BUFFER);
+    ssize_t req_len = SB_DEFAULT_BUFFER;
+    char * res_buffer = malloc(SB_DEFAULT_BUFFER);
+    ssize_t res_len = SB_DEFAULT_BUFFER;
+
+    while (1)
+    {
+        int msg;
+        len = read(conn_ctx->in_pipe, &msg, sizeof(int));
+        if (len == -1)
+        {
+            perror("sb_net_thread - read:");
+            exit(0);
+        }
+
+        req_len = conn_ctx->recv(msg, req_buffer, req_len, 0);
+        res_len = conn_ctx->process(req_buffer, req_len, res_buffer, res_len);
+        len = conn_ctx->send(msg, res_buffer, res_len, 0);
+        sleep(1);
+
+        //safely close connection
+        safe_close(msg);
+
+        int ready_msg = SB_READY;
+        len = write(conn_ctx->out_pipe, &ready_msg, sizeof(int));
+    }
+    
+    return NULL;
+}
+
+static int sb_launch_thread(
+    int i,
+    int sock_fd, 
+    struct sb_net_server_info *server_info,
+    ssize_t (*custom_recv)(int, void *, size_t, int),
+    ssize_t (*custom_send)(int, void *, size_t, int),
+    ssize_t ( *custom_process )(char * req, ssize_t req_len, char * res, ssize_t res_len)
+)
+{
+    int ret;
+    struct sb_net_handler_ctx * ctx = sb_setup_thread_pipes(server_info, i); 
+    if (ctx == NULL)
+    {
+        return SB_ERR_PIPE;
+    }
+    ctx->sock_fd = sock_fd;
+    ctx->recv = custom_recv;
+    ctx->send = custom_send;
+    ctx->process = custom_process;
+    ret = pthread_create(&server_info->thread_ids[i], NULL, sb_net_thread, ctx);
+    if (ret != 0)
+    {
+        return SB_ERR_PTHREAD;
+    }
+
+    return SB_SUCCESS;
+}
+
+static int sb_net_socket_setup(struct socket_info * socket_info)
 {
     int sock_fd;
     int ret;
@@ -90,9 +167,9 @@ int sb_net_socket_setup(struct sb_net_server_info * server_info)
     for now STREAM and DGRAM only
     */
     memset(&hints, 0, sizeof hints);
-    hints.ai_family = server_info->addr_family;
-    hints.ai_socktype = server_info->addr_socktype;
-    hints.ai_flags = server_info->addr_flags; 
+    hints.ai_family = socket_info->addr_family;
+    hints.ai_socktype = socket_info->addr_socktype;
+    hints.ai_flags = socket_info->addr_flags; 
 
     /*
     https://man7.org/linux/man-pages/man3/getaddrinfo.3.html
@@ -105,14 +182,14 @@ int sb_net_socket_setup(struct sb_net_server_info * server_info)
     is NULL, then the returned socket addresses will be suitable for
     bind(2)ing a socket that will accept(2) connections."
     */
-    if ((ret = getaddrinfo(NULL, server_info->port, &hints, &servinfo)) != 0) {
+    if ((ret = getaddrinfo(NULL, socket_info->port, &hints, &servinfo)) != 0) {
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(ret));
         return SB_ERR_GETADDRINFO;
     }
 
     for(p = servinfo; p != NULL; p = p->ai_next) 
     {
-        if ((sock_fd = socket(p->ai_family, p->ai_socktype,p->ai_protocol)) == -1) 
+        if ((sock_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) 
         {
             perror("server: socket");
             continue;
@@ -156,96 +233,66 @@ int sb_net_socket_setup(struct sb_net_server_info * server_info)
         return SB_ERR_BIND;
     }
 
-    server_info->sock_fd = sock_fd;
+    memcpy(&socket_info->addr, p->ai_addr, sizeof(struct sockaddr));
+    socket_info->addr_len = p->ai_addrlen;
+    socket_info->sock_fd = sock_fd;
     return SB_SUCCESS;
 
 }
 
-void * sb_net_thread(void * ctx)
-{   
-    /*
-    when started, check that sockfd is below zero
-        - if so, send message to main loop saying you're ready.
-        - otherwise deal with sockfd (which is open connection)
-    */
-    struct sb_net_handler_ctx * conn_ctx = (struct sb_net_handler_ctx *)ctx;
-    ssize_t len;
-    printf("sb_net_thread - ctx: in:%d, out:%d\n", conn_ctx->in_pipe, conn_ctx->out_pipe);
+/***********************************************************
+ * Static functions: end
+ **********************************************************/
 
-    if (conn_ctx->sock_fd == -1)
-    {
-        int ready_msg = SB_READY;
-        len = write(conn_ctx->out_pipe, &ready_msg, sizeof(int));
-        if (len == -1)
-        {
-            perror("sb_net_thread - write");
-        }
-    }
 
-    while (1)
-    {
-        int msg;
-        len = read(conn_ctx->in_pipe, &msg, sizeof(int));
-        if (len == -1)
-        {
-            perror("sb_net_thread - read:");
-            exit(0);
-        }
-
-        //TODO: handle connection
-        
-        //safely close connection
-        safe_close(msg);
-
-        int ready_msg = SB_READY;
-        len = write(conn_ctx->out_pipe, &ready_msg, sizeof(int));
-    }
-    
-    return NULL;
-}
-
-struct sb_net_handler_ctx * sb_setup_threads(struct sb_net_server_info * server, int threads_i)
+struct sb_net_server_info * sb_net_server_info_setup(
+    const char * port,
+    const int addr_family,
+    const int addr_flags,
+    const int addr_socktype,
+    const int conn_backlog,
+    const int max_handlers,
+    const int min_handlers
+)
 {
-    int pipe_in[2];
-    int pipe_out[2];
+    struct sb_net_server_info * server_info = malloc(sizeof(struct sb_net_server_info));
+    strcpy(server_info->socket.port, port);
+    server_info->socket.addr_family = addr_family;
+    server_info->socket.addr_flags = addr_flags;
+    server_info->socket.addr_socktype = addr_socktype;
+    server_info->conn_backlog = conn_backlog;
+    server_info->max_handlers = max_handlers;
+    server_info->min_handlers = min_handlers;
+	server_info->len = 0;
+    server_info->current_thread = 0;
 
-    if (pipe(pipe_in) == -1 || pipe(pipe_out) == -1 )
+    int ret = sb_net_socket_setup(&server_info->socket);
+    if (ret != SB_SUCCESS)
     {
-        perror("pipe");
+        //TODO: have better error handling--sb_net_socket_setup can fail more many reasons
+        printf("sb_net_socket_setup failed: %d\n", ret);
         return NULL;
     }
-    
-    struct sb_net_handler_ctx * ctx = malloc(sizeof(struct sb_net_handler_ctx)); 
 
-    ctx->in_pipe = pipe_out[0];
-    server->pipes_out[threads_i].fd = pipe_out[1];
-    server->pipes_out[threads_i].events = POLLIN;
-
-    ctx->out_pipe = pipe_in[1];
-    server->pipes_in[threads_i].fd = pipe_in[0];
-    server->pipes_in[threads_i].events = POLLIN;
-
-    printf("sb_setup_threads - ctx: in:%d, out:%d\n", ctx->in_pipe, ctx->out_pipe);
-    printf("sb_setup_threads - thread: in:%d, out:%d\n", server->pipes_in[threads_i].fd, server->pipes_out[threads_i].fd);
-
-    return ctx;
+    return server_info;
 }
 
 int sb_net_accept_conn(struct sb_net_server_info * server_info, 
                         ssize_t ( *custom_recv )(int, void *, size_t, int),
-                        ssize_t ( *custom_send )(int, void *, size_t, int))
+                        ssize_t ( *custom_send )(int, void *, size_t, int),
+                        ssize_t ( *req_processor )(char * req, ssize_t req_len, char * res, ssize_t res_len))
 {
-    int sock_fd = server_info->sock_fd;
+    int sock_fd = server_info->socket.sock_fd;
     int conn_fd;
     struct sockaddr_storage client_addr;
     socklen_t sin_size;
     char s[INET6_ADDRSTRLEN];
 
     ssize_t len;
-    int ret;
 
     if (listen(sock_fd, server_info->conn_backlog) == -1) 
     {
+        printf("sock_fd: %d\n", sock_fd);
         perror("listen");
         return SB_ERR_LISTEN;
     }
@@ -291,24 +338,16 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
     server_info->thread_ids = thread_ids;
     server_info->pipes_in = pipes_in;
     server_info->pipes_out = pipes_out;
-    server_info->len = server_info->min_handlers;
 
-    for (int i=0; i<server_info->len; i++)
+    for (int i=0; i<server_info->min_handlers; i++)
     {    
-        struct sb_net_handler_ctx * ctx = sb_setup_threads(server_info, i); 
-        if (ctx == NULL)
+        if (sb_launch_thread(i, -1, server_info, custom_recv, custom_send, req_processor) != 0)
         {
+            //TODO: actually handle errors
+            printf("thread launch failed...exiting\n");
             exit(1);
         }
-        ctx->sock_fd = -1;
-        ctx->recv = custom_recv;
-        ctx->send = custom_send;
-        printf("sb_net_accept_conn - ctx: in:%d, out:%d\n", ctx->in_pipe, ctx->out_pipe);
-        ret = pthread_create(&server_info->thread_ids[i], NULL, sb_net_thread, ctx);
-        if (ret != 0)
-        {
-            printf("sb_net_accept_conn - pthread_create: %d\n", ret);
-        }
+        server_info->len++;
     }
     
     int i;
@@ -316,7 +355,7 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
     int thread_count;
     int pipe_count;
     int msg;
-    int thread_err;
+    // int thread_err;
     while(1)
     /*
     When accept is called and conn_fd is set, send conn_fd as a pipe argument
@@ -350,7 +389,7 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
         i=0;
         ready = pipe_count;
         thread_count = 0;
-        thread_err = 0;
+        // thread_err = 0;
         while (i<ready)
         {
             len = read(pipes_in[i].fd, &msg, sizeof(int));
@@ -377,12 +416,7 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
             //if above condition is true, a thread sent a message other than SB_READY
         }
 
-        if (thread_count==0)
-        {
-            //TODO: handle case when no threads are ready
-        }
-
-        while (thread_count)
+        while (thread_count || server_info->len<server_info->max_handlers)
         {
             //TODO: add timeout on sock_fd--if no incoming connection,
             //then its fine to check if any threads have become ready while waiting.
@@ -397,17 +431,47 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
             inet_ntop(client_addr.ss_family, get_in_addr((struct sockaddr *)&client_addr), s, sizeof(s) );
             printf("sb_net_accept_conn - server: got connection from %s\n", s);
 
-            //pass connections to pipes_out (pass to ready_threads-1);
-            //decrement ready_threads
-            len = write(pipes_out[thread_count-1].fd, &conn_fd, sizeof(int));
-            thread_count--;
-            if (len == -1)
+            if (thread_count==0) 
             {
-                //TODO: handle errors
-                perror("write");
-                continue;
+                if (server_info->len<server_info->max_handlers)
+                {
+                    if (sb_launch_thread(server_info->len, conn_fd, server_info, custom_recv, custom_send, req_processor) != 0)
+                    {
+                        //TODO: actually handle errors
+                        printf("thread launch failed...exiting\n");
+                        exit(1);
+                    }
+                    server_info->len++;
+                }
+                else 
+                {
+                    //pass connections to pipes_out (pass to ready_threads-1);
+                    len = write(pipes_out[server_info->current_thread].fd, &conn_fd, sizeof(int));
+                    server_info->current_thread=(server_info->current_thread+1) % server_info->len;
+                    if (len == -1)
+                    {
+                        //TODO: handle errors
+                        perror("write");
+                        exit(1);
+                    }
+                }
+            }
+            else
+            {
+                //pass connections to pipes_out (pass to ready_threads-1);
+                //decrement ready_threads
+                len = write(pipes_out[thread_count-1].fd, &conn_fd, sizeof(int));
+                thread_count--;
+                if (len == -1)
+                {
+                    //TODO: handle errors
+                    perror("write");
+                    exit(1);
+                }
             }
         };
+
+        //TODO: mechanism for closing threads if len exceeds min
 
     }
 }

@@ -21,3 +21,6 @@ release/
 *.su
 *.idb
 *.pdb
+
+# env
+.vscode/
