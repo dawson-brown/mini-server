@@ -88,14 +88,15 @@ static ssize_t test_mini_recv(int socket, void * buf, size_t n, int flags)
 
 static ssize_t test_mini_send(int socket, void * buf, size_t n, int flags) 
 {
-	printf("buf: %d\n", *(int *)buf);
 	ssize_t len = send(socket, buf, n, flags);
     return len;
 }
 
 ssize_t test_mini_req_processor(char * req, ssize_t req_len, char * res, ssize_t res_len)
 {
-	memcpy(res, req, req_len);
+	int tmp = *(int *)req;
+	tmp = tmp*2;
+	memcpy(res, &tmp, req_len);
 	res_len = req_len;
     return res_len;
 }
@@ -152,21 +153,27 @@ MU_TEST(test_mini_server_instance){
 	mu_assert(connect(sockfd_3, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) >= 0, "sockfd_3 failed to connect");
 	send(sockfd_3 , &buf3, sizeof(int) , 0 );
 
+	mu_assert(server_info->len==3, "server_info->len==3");
+
 	//fourth connection
 	int sockfd_4 = socket(AF_INET, SOCK_STREAM, 0);
 	int buf4 = 4;
 	mu_assert(connect(sockfd_4, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) >= 0, "sockfd_4 failed to connect");
 	send(sockfd_4 , &buf4, sizeof(int) , 0 );
+	sleep(1);
+
+	mu_assert(server_info->len==4, "server_info->len==4");
 
 	recv(sockfd_1, &buf1, sizeof(int), 0);
 	recv(sockfd_2, &buf2, sizeof(int), 0);
 	recv(sockfd_3, &buf3, sizeof(int), 0);
 	recv(sockfd_4, &buf4, sizeof(int), 0);
 
-	mu_assert(buf1 == 1, "buf1 == 1");
-	mu_assert(buf2 == 2, "buf2 == 2");
-	mu_assert(buf3 == 3, "buf3 == 3");
-	mu_assert(buf4 == 4, "buf4 == 4");
+	mu_assert(buf1 == 2, "buf1 == 2");
+	mu_assert(buf2 == 4, "buf2 == 4");
+	mu_assert(buf3 == 6, "buf3 == 6");
+	mu_assert(buf4 == 8, "buf4 == 8");
+
 
 	free(server_info);
 }

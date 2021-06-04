@@ -4,6 +4,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <poll.h>
+#include <fcntl.h>
 
 
 enum sb_net_returns
@@ -11,6 +12,7 @@ enum sb_net_returns
     SB_SUCCESS,
     SB_ERR_GETADDRINFO,
     SB_ERR_SETSOCKOPT,
+    SB_ERR_FCNTL,
     SB_ERR_BIND,
     SB_ERR_LISTEN,
     SB_ERR_PIPE,

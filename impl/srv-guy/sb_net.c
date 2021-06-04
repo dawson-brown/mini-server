@@ -94,6 +94,13 @@ static void * sb_net_thread(void * ctx)
         {
             perror("sb_net_thread - write");
         }
+
+        len = read(conn_ctx->in_pipe, &conn_ctx->sock_fd, sizeof(int));
+        if (len == -1)
+        {
+            perror("sb_net_thread - read:");
+            exit(0);
+        }
     }
 
     char * req_buffer = malloc(SB_DEFAULT_BUFFER);
@@ -103,25 +110,19 @@ static void * sb_net_thread(void * ctx)
 
     while (1)
     {
-        int msg;
-        len = read(conn_ctx->in_pipe, &msg, sizeof(int));
-        if (len == -1)
-        {
-            perror("sb_net_thread - read:");
-            exit(0);
-        }
-
-        req_len = conn_ctx->recv(msg, req_buffer, req_len, 0);
+        req_len = conn_ctx->recv(conn_ctx->sock_fd, req_buffer, req_len, 0);
         res_len = conn_ctx->process(req_buffer, req_len, res_buffer, res_len);
-        len = conn_ctx->send(msg, res_buffer, res_len, 0);
+        len = conn_ctx->send(conn_ctx->sock_fd, res_buffer, res_len, 0);
         sleep(1);
-
-        //safely close connection
-        safe_close(msg);
 
         int ready_msg = SB_READY;
         len = write(conn_ctx->out_pipe, &ready_msg, sizeof(int));
+
+        break;
     }
+
+    //safely close connection
+    safe_close(conn_ctx->sock_fd);
     
     return NULL;
 }
@@ -206,6 +207,22 @@ static int sb_net_socket_setup(struct socket_info * socket_info)
             perror("setsockopt");
             return SB_ERR_SETSOCKOPT;
         }
+
+        /*
+        make socket non-blocking
+        */
+        int flags = fcntl(sock_fd, F_GETFL, 0);
+        if (ret == -1)
+        {
+            perror("fcntl, F_GETFL");
+            return SB_ERR_FCNTL;
+        }
+        
+        if (fcntl(sock_fd, F_SETFL, (flags | O_NONBLOCK)) != 0)
+        {
+            perror("fcntl, F_SETFL");
+            return SB_ERR_FCNTL;
+        } 
 
         /*
         https://man7.org/linux/man-pages/man2/bind.2.html
@@ -298,39 +315,6 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
     }
     printf("sb_net_accept_conn - server: waiting for connections...\n");
 
-    /*
-    see pipe and poll:
-        https://stackoverflow.com/questions/25876805/c-how-to-make-threads-communicate-with-each-other
-        https://man7.org/linux/man-pages/man2/pipe.2.html
-        https://man7.org/linux/man-pages/man7/pipe.7.html
-        https://man7.org/linux/man-pages/man2/poll.2.html
-
-    there should be two distinct functions here--the connection handler that receives incoming data and
-    a user defined function to handle the data. The connection handler is defined as part of this sb_net
-    library. The connection handler passes the data to the user defined handler.
-
-    For each thread, there will be 2 pipes--one to the thread and one to this accept function. Server info will 
-    have a min and max number of threads set. This function will always maintain the min number of threads
-    and will fire up to the max number of threads as needed. The threads will send a message to this function to
-    say they can handle a connection, this function will poll those descriptors and will send incoming connections
-    only to those threads that are ready. When the threads are first setup they say they're ready and when they finish
-    a connection they'll say they're ready. It will remain in this 'send to existing thread' mode until it hits a point 
-    that there are no available threads. Then it will create a single new thread for the new connection and add 
-    that thread to descriptors/pipes being polled/maintained. It will then revert back to 'poll mode'--this should of 
-    course return the new thread (and maybe others) if the new thread was setup right.
-
-    (the last two sentences above might be bad. This function might get scheduled before the new thread does and so the
-    new thread won't have sent its 'im ready' message yet. Maybe there should be an op_mode to the ctx and its possible
-    to send the conn_fd as an argument to the thread when its created, and if a conn_fd is sent, that thread won't send its ready
-    message until after its done with that argument fd.)
-
-    If there comes a point when poll returns descriptors that are ready, but there are no waiting connections and 
-    more than min threads are open, send 'close' messages to one of the threads and poll again. If there are still no
-    connections and still more than min threads, close another. Keep doing this, one at a time, until there are min 
-    threads. There will have to be a simple counter for the number of open threads.
-
-    */
-
     //min threads setup;
     pthread_t thread_ids[server_info->max_handlers];
     struct pollfd pipes_in[server_info->max_handlers];
@@ -355,6 +339,14 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
     int thread_count;
     int pipe_count;
     int msg;
+    // wait half a second for incoming connections
+    struct timeval accept_timeout;
+    accept_timeout.tv_sec = 0;
+    accept_timeout.tv_usec = 500000;
+    fd_set sock_select;
+    FD_ZERO(&sock_select);
+    FD_SET(sock_fd, &sock_select);
+
     // int thread_err;
     while(1)
     /*
@@ -420,34 +412,53 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
         {
             //TODO: add timeout on sock_fd--if no incoming connection,
             //then its fine to check if any threads have become ready while waiting.
-            sin_size = sizeof(client_addr);
-            conn_fd = accept(sock_fd, (struct sockaddr *)&client_addr, &sin_size);
-            if (conn_fd == -1) 
-            {
-                //TODO: handle errors
-                perror("accept");
-                continue;
-            }
-            inet_ntop(client_addr.ss_family, get_in_addr((struct sockaddr *)&client_addr), s, sizeof(s) );
-            printf("sb_net_accept_conn - server: got connection from %s\n", s);
+            int incoming_conn = select(1, &sock_select, NULL, NULL, &accept_timeout);
 
-            if (thread_count==0) 
-            {
-                if (server_info->len<server_info->max_handlers)
+            if (incoming_conn > 0)
+            { 
+
+                sin_size = sizeof(client_addr);
+                conn_fd = accept(sock_fd, (struct sockaddr *)&client_addr, &sin_size);
+                if (conn_fd == -1) 
                 {
-                    if (sb_launch_thread(server_info->len, conn_fd, server_info, custom_recv, custom_send, req_processor) != 0)
-                    {
-                        //TODO: actually handle errors
-                        printf("thread launch failed...exiting\n");
-                        exit(1);
-                    }
-                    server_info->len++;
+                    //TODO: handle errors
+                    perror("accept");
+                    continue;
                 }
-                else 
+                inet_ntop(client_addr.ss_family, get_in_addr((struct sockaddr *)&client_addr), s, sizeof(s) );
+                printf("sb_net_accept_conn - server: got connection from %s\n", s);
+
+                if (thread_count==0) 
+                {
+                    if (server_info->len<server_info->max_handlers)
+                    {
+                        if (sb_launch_thread(server_info->len, conn_fd, server_info, custom_recv, custom_send, req_processor) != 0)
+                        {
+                            //TODO: actually handle errors
+                            printf("thread launch failed...exiting\n");
+                            exit(1);
+                        }
+                        server_info->len++;
+                    }
+                    else 
+                    {
+                        //pass connections to a busy thread
+                        len = write(pipes_out[server_info->current_thread].fd, &conn_fd, sizeof(int));
+                        server_info->current_thread=(server_info->current_thread+1) % server_info->len;
+                        if (len == -1)
+                        {
+                            //TODO: handle errors
+                            perror("write");
+                            exit(1);
+                        }
+                    }
+                }
+                else
                 {
                     //pass connections to pipes_out (pass to ready_threads-1);
-                    len = write(pipes_out[server_info->current_thread].fd, &conn_fd, sizeof(int));
-                    server_info->current_thread=(server_info->current_thread+1) % server_info->len;
+                    //decrement ready_threads
+                    len = write(pipes_out[thread_count-1].fd, &conn_fd, sizeof(int));
+                    thread_count--;
                     if (len == -1)
                     {
                         //TODO: handle errors
@@ -456,22 +467,22 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
                     }
                 }
             }
-            else
+            else if (incoming_conn == -1)
             {
-                //pass connections to pipes_out (pass to ready_threads-1);
-                //decrement ready_threads
-                len = write(pipes_out[thread_count-1].fd, &conn_fd, sizeof(int));
-                thread_count--;
-                if (len == -1)
-                {
-                    //TODO: handle errors
-                    perror("write");
-                    exit(1);
-                }
+                //TODO: handle errors
+                perror("select");
+                exit(1);
             }
-        };
+            else 
+            {
+                break;
+            }
+        }
 
-        //TODO: mechanism for closing threads if len exceeds min
+        if (server_info->len > server_info->min_handlers)
+        {
+            //close the last open thread. 
+        }
 
     }
 }
