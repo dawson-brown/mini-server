@@ -77,33 +77,28 @@ MU_TEST(test_swap_n_bytes_2_passes) {
 	mu_check(list[7] == 0);
 }
 
-
-static ssize_t test_mini_recv(int socket, void * buf, size_t n, int flags) 
+static int test_mini_req_processor(
+	const char * req, 
+	const ssize_t req_len, 
+	char ** res, 
+	ssize_t * res_len, 
+	void * app_data)
 {
-	//an integer is sent to each thread, and the thread sleeps for that long
-	ssize_t len = recv(socket, buf, sizeof(int), 0);
-	sleep(1);
-    return len;
+	return 0;
 }
 
-static ssize_t test_mini_send(int socket, void * buf, size_t n, int flags) 
+static int test_mini_res_processor(
+	char * res, 
+	ssize_t res_len, 
+	void * app_data
+)
 {
-	ssize_t len = send(socket, buf, n, flags);
-    return len;
-}
-
-ssize_t test_mini_req_processor(char * req, ssize_t req_len, char * res, ssize_t res_len)
-{
-	int tmp = *(int *)req;
-	tmp = tmp*2;
-	memcpy(res, &tmp, req_len);
-	res_len = req_len;
-    return res_len;
+	return 0;
 }
 
 void * test_mini_server(void * server_ctx){
 	struct sb_net_server_info * srv_ctx = (struct sb_net_server_info *) server_ctx;
-	sb_net_accept_conn(srv_ctx, test_mini_recv, test_mini_send, test_mini_req_processor);
+	sb_net_accept_conn(srv_ctx, test_mini_req_processor, test_mini_res_processor, 0);
 	return NULL;
 }
 

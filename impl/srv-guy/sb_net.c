@@ -85,8 +85,9 @@ static void * sb_net_thread(void * ctx)
     */
     struct sb_net_handler_ctx * conn_ctx = (struct sb_net_handler_ctx *)ctx;
     ssize_t len;
+    int sock = conn_ctx->sock_fd;
 
-    if (conn_ctx->sock_fd == -1)
+    if (sock == -1)
     {
         int ready_msg = SB_READY;
         len = write(conn_ctx->out_pipe, &ready_msg, sizeof(int));
@@ -103,24 +104,104 @@ static void * sb_net_thread(void * ctx)
         }
     }
 
-    char * req_buffer = malloc(SB_DEFAULT_BUFFER);
-    ssize_t req_len = SB_DEFAULT_BUFFER;
-    char * res_buffer = malloc(SB_DEFAULT_BUFFER);
-    ssize_t res_len = SB_DEFAULT_BUFFER;
+    size_t req_len = 0;
+    ssize_t req_buf_len = SB_DEFAULT_BUFFER;
+    char * req_buf_top = malloc(req_buf_len);
+    char * req_buf_curr = req_buf_top;
+
+    size_t res_len = 0;
+    ssize_t res_buf_len = SB_DEFAULT_BUFFER;
+    char * res_buf_top = malloc(res_buf_len);
+
+    int ret;
 
     while (1)
     {
-        req_len = conn_ctx->recv(conn_ctx->sock_fd, req_buffer, req_len, 0);
-        res_len = conn_ctx->process(req_buffer, req_len, res_buffer, res_len);
-        len = conn_ctx->send(conn_ctx->sock_fd, res_buffer, res_len, 0);
-        sleep(1);
+        /*
+         RECIEVE
+        */
+        app_recv: len = recv(sock, req_buf_curr, req_buf_len - req_len, 0);
+        req_len += len;
 
-        int ready_msg = SB_READY;
-        len = write(conn_ctx->out_pipe, &ready_msg, sizeof(int));
+        if (len == -1)
+        {
+            // TODO: handle errors...
+            perror("recv");
+            exit(1);
+        }
+        ret = conn_ctx->process_req(req_buf_curr, req_len, &res_buf_top, &res_len, conn_ctx->app_data);
+        
+        if (ret == SB_APP_RECV)
+        {
+            req_buf_curr = req_buf_top;
+            req_len = 0;
+            goto app_recv;
+        } 
+        else if (ret == SB_APP_RECV_MORE)
+        {
+            if (req_len > req_buf_len/2)
+            {
+                req_buf_len = req_buf_len*2;
+                req_buf_top = realloc(req_buf_top, req_buf_len);
+            }
+            req_buf_curr = req_buf_top + req_len;
+            goto app_recv;
+        }
+        else if (ret == SB_APP_ERR)
+        {
+            // TODO: handle errors...
+            break;
+        }
+        /*
+        need to architect this so that there can be many sends much like
+        there can be many recvs. Maybe the server wants to keep sending and sending
+        Perhaps there should be a process_recv function and a process_send function
+        that communicate with a (void *) that points to a structure with application
+        data in it.
+        */
+        
+        /*
+         SEND
+        */
+        app_send: res_len = send(sock, res_buf_top + res_len, res_len, 0);
 
-        break;
+        if (len == -1)
+        {
+            // TODO: handle errors...
+            perror("send");
+            exit(1);
+        }
+
+        ret = conn_ctx->process_res(res_buf_top, res_len, conn_ctx->app_data);
+        if (ret == SB_APP_SEND)
+        {
+            res_len = 0;
+            goto app_send;
+        } 
+        else if (ret == SB_APP_SEND_MORE)
+        {
+            goto app_send;
+        }
+        else if (ret == SB_APP_ERR)
+        {
+            // TODO: handle errors...
+            break;
+        }
+
+        // int ready_msg = SB_READY;
+        // len = write(conn_ctx->out_pipe, &ready_msg, sizeof(int));
+
+        // break;
     }
 
+    close(conn_ctx->out_pipe);
+    close(conn_ctx->in_pipe);
+
+    free(req_buf_top);
+    free(res_buf_top);
+    free(ctx);
+    free(conn_ctx->app_data);
+    
     //safely close connection
     safe_close(conn_ctx->sock_fd);
     
@@ -131,9 +212,9 @@ static int sb_launch_thread(
     int i,
     int sock_fd, 
     struct sb_net_server_info *server_info,
-    ssize_t (*custom_recv)(int, void *, size_t, int),
-    ssize_t (*custom_send)(int, void *, size_t, int),
-    ssize_t ( *custom_process )(char * req, ssize_t req_len, char * res, ssize_t res_len)
+    int ( *process_req )(const char * req, const ssize_t req_len, char ** res, ssize_t * res_len, void * app_data),
+    int ( *process_res )(char * res, ssize_t res_len, void * app_data),
+    int app_data_size
 )
 {
     int ret;
@@ -143,9 +224,9 @@ static int sb_launch_thread(
         return SB_ERR_PIPE;
     }
     ctx->sock_fd = sock_fd;
-    ctx->recv = custom_recv;
-    ctx->send = custom_send;
-    ctx->process = custom_process;
+    ctx->process_req = process_req;
+    ctx->process_res = process_res;
+    ctx->app_data = calloc(app_data_size, sizeof(char));
     ret = pthread_create(&server_info->thread_ids[i], NULL, sb_net_thread, ctx);
     if (ret != 0)
     {
@@ -295,9 +376,9 @@ struct sb_net_server_info * sb_net_server_info_setup(
 }
 
 int sb_net_accept_conn(struct sb_net_server_info * server_info, 
-                        ssize_t ( *custom_recv )(int, void *, size_t, int),
-                        ssize_t ( *custom_send )(int, void *, size_t, int),
-                        ssize_t ( *req_processor )(char * req, ssize_t req_len, char * res, ssize_t res_len))
+                        int ( *process_req )(const char * req, const ssize_t req_len, char ** res, ssize_t * res_len, void * app_data),
+                        int ( *process_res )(char * res, ssize_t res_len, void * app_data),
+                        const int app_data_size)
 {
     int sock_fd = server_info->socket.sock_fd;
     int conn_fd;
@@ -325,7 +406,7 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
 
     for (int i=0; i<server_info->min_handlers; i++)
     {    
-        if (sb_launch_thread(i, -1, server_info, custom_recv, custom_send, req_processor) != 0)
+        if (sb_launch_thread(i, -1, server_info, process_req, process_res, app_data_size) != 0)
         {
             //TODO: actually handle errors
             printf("thread launch failed...exiting\n");
@@ -410,13 +491,10 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
 
         while (thread_count || server_info->len<server_info->max_handlers)
         {
-            //TODO: add timeout on sock_fd--if no incoming connection,
-            //then its fine to check if any threads have become ready while waiting.
             int incoming_conn = select(1, &sock_select, NULL, NULL, &accept_timeout);
 
             if (incoming_conn > 0)
             { 
-
                 sin_size = sizeof(client_addr);
                 conn_fd = accept(sock_fd, (struct sockaddr *)&client_addr, &sin_size);
                 if (conn_fd == -1) 
@@ -425,6 +503,13 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
                     perror("accept");
                     continue;
                 }
+
+                if (errno == EWOULDBLOCK)
+                {
+                    //stop accepting on timeout and continue with event loop
+                    break;
+                }
+
                 inet_ntop(client_addr.ss_family, get_in_addr((struct sockaddr *)&client_addr), s, sizeof(s) );
                 printf("sb_net_accept_conn - server: got connection from %s\n", s);
 
@@ -432,7 +517,7 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
                 {
                     if (server_info->len<server_info->max_handlers)
                     {
-                        if (sb_launch_thread(server_info->len, conn_fd, server_info, custom_recv, custom_send, req_processor) != 0)
+                        if (sb_launch_thread(server_info->len, conn_fd, server_info, process_req, process_res, app_data_size) != 0)
                         {
                             //TODO: actually handle errors
                             printf("thread launch failed...exiting\n");
@@ -481,7 +566,19 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
 
         if (server_info->len > server_info->min_handlers)
         {
-            //close the last open thread. 
+            //close the last open thread.
+            int close_msg = SB_CLOSE; 
+            len = write(pipes_out[server_info->len-1].fd, &close_msg, sizeof(int));
+            if (len == -1)
+            {
+                //TODO: handle errors
+                perror("write");
+                exit(1);
+            }
+            close(pipes_out[server_info->len-1].fd);
+            close(pipes_in[server_info->len-1].fd);
+
+            server_info->len-=1;
         }
 
     }
