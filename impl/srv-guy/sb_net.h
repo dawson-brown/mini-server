@@ -30,10 +30,8 @@ enum sb_net_app_flags {
     SB_APP_RECV, //this indicates a 'fresh' recv--whats been recieved can be overwritten
     SB_APP_RECV_MORE, //this indicates that whats recieved next should be appended to
     SB_APP_SEND,
-    SB_APP_SEND_MORE,
     SB_APP_ERR, // this is an error
-    SB_APP_CLOSE_CONN,
-    SB_APP_SESSION_DONE,
+    SB_APP_CONN_DONE,
     /* TODO: figure out the proper return flags.
     maybe make them powers of 2 to be ORed together? */
 };
@@ -73,8 +71,8 @@ struct sb_net_handler_ctx
      * the user defined application layer.
      */
     void * app_data; 
-    int ( *process_req )(const char * req, const ssize_t req_len, char ** res, ssize_t * res_len, void * app_data);
-    int ( *process_res )(char * res, ssize_t res_len, void * app_data);
+    int ( *process_req )(const char * req, const ssize_t req_len, void * app_data);
+    int ( *process_res )(char * res, ssize_t * res_len, void * app_data);
 };
 
 struct sb_net_server_info * sb_net_server_info_setup(
@@ -88,6 +86,6 @@ struct sb_net_server_info * sb_net_server_info_setup(
 );
 
 int sb_net_accept_conn(struct sb_net_server_info * server_info, 
-                        int ( *process_req )(const char * req, const ssize_t req_len, char ** res, ssize_t * res_len, void * app_data),
-                        int ( *process_res )(char * res, ssize_t res_len, void * app_data),
+                        int ( *process_req )(const char * req, const ssize_t req_len, void * app_data),
+                        int ( *process_res )(char * res, ssize_t * res_len, void * app_data),
                         const int app_data_size);

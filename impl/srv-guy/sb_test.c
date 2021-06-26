@@ -77,23 +77,95 @@ MU_TEST(test_swap_n_bytes_2_passes) {
 	mu_check(list[7] == 0);
 }
 
+struct app_t {
+	int request;
+	int sent_count;
+};
+
+enum app_t_requests{
+	APP_GET_DOUBLE,
+	APP_GET_INT,
+	APP_GET_10_DOUBLE,
+	APP_GET_10_INT
+};
+
 static int test_mini_req_processor(
 	const char * req, 
 	const ssize_t req_len, 
-	char ** res, 
-	ssize_t * res_len, 
 	void * app_data)
 {
-	return 0;
+
+	if (req[req_len-1] == '\n' && req[req_len-2] == '\n'){
+		struct app_t * app = (struct app_t *) app_data;
+		app->sent_count = 0;
+		if (memcmp(req, "GET DOUBLE", 10) == 0){
+			app->request = APP_GET_DOUBLE;
+		} else if (memcmp(req, "GET INT", 7) == 0){
+			app->request = APP_GET_INT;
+		} else if (memcmp(req, "GET 10 INT", 10) == 0){
+			app->request = APP_GET_10_INT;
+		} else if (memcmp(req, "GET 10 DOUBLE", 13) == 0){
+			app->request = APP_GET_10_DOUBLE;
+		} else {
+			return SB_APP_ERR;
+		}
+		return SB_APP_SEND;
+	} else {
+		return SB_APP_RECV_MORE;
+	}
 }
 
 static int test_mini_res_processor(
 	char * res, 
-	ssize_t res_len, 
+	ssize_t * res_len, 
 	void * app_data
 )
 {
-	return 0;
+	struct app_t * app = (struct app_t *) app_data;
+	int x = 2;
+	double y = 3.1415;
+
+	if (app->request == APP_GET_INT){
+		memcpy(res, &x, sizeof(int));
+		memcpy(res + sizeof(int), "\n\n", 2);
+		*res_len = sizeof(int) + 2;
+		return SB_APP_RECV;
+	}
+	
+	if (app->request == APP_GET_DOUBLE){
+		memcpy(res, &y, sizeof(double));
+		memcpy(res + sizeof(double), "\n\n", 2);
+		*res_len = sizeof(double) + 2;
+		return SB_APP_RECV;
+	}
+
+	if (app->request == APP_GET_10_INT){
+		memcpy(res, &x, sizeof(int));
+		memcpy(res + sizeof(int), "\n\n", 2);
+		*res_len = sizeof(int) + 2;
+		app->sent_count++;
+
+		if (app->sent_count==10){
+			return SB_APP_RECV;
+		} else {
+			app->sent_count = 0;
+			return SB_APP_SEND;
+		}
+	}
+
+	if (app->request == APP_GET_10_DOUBLE){
+		memcpy(res, &y, sizeof(double));
+		memcpy(res + sizeof(double), "\n\n", 2);
+		*res_len = sizeof(double) + 2;
+		app->sent_count++;
+
+		if (app->sent_count==10){
+			return SB_APP_RECV;
+		} else {
+			app->sent_count = 0;
+			return SB_APP_SEND;
+		}
+	}
 }
 
 void * test_mini_server(void * server_ctx){

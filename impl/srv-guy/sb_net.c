@@ -109,9 +109,10 @@ static void * sb_net_thread(void * ctx)
     char * req_buf_top = malloc(req_buf_len);
     char * req_buf_curr = req_buf_top;
 
-    size_t res_len = 0;
     ssize_t res_buf_len = SB_DEFAULT_BUFFER;
+    size_t res_len = res_buf_len;
     char * res_buf_top = malloc(res_buf_len);
+    char * res_buf_curr = res_buf_top;
 
     int ret;
 
@@ -129,7 +130,7 @@ static void * sb_net_thread(void * ctx)
             perror("recv");
             exit(1);
         }
-        ret = conn_ctx->process_req(req_buf_curr, req_len, &res_buf_top, &res_len, conn_ctx->app_data);
+        ret = conn_ctx->process_req(req_buf_curr, req_len, conn_ctx->app_data);
         
         if (ret == SB_APP_RECV)
         {
@@ -147,51 +148,41 @@ static void * sb_net_thread(void * ctx)
             req_buf_curr = req_buf_top + req_len;
             goto app_recv;
         }
-        else if (ret == SB_APP_ERR)
+        else if (ret == SB_APP_ERR || ret == SB_APP_CONN_DONE)
         {
             // TODO: handle errors...
             break;
         }
-        /*
-        need to architect this so that there can be many sends much like
-        there can be many recvs. Maybe the server wants to keep sending and sending
-        Perhaps there should be a process_recv function and a process_send function
-        that communicate with a (void *) that points to a structure with application
-        data in it.
-        */
         
         /*
          SEND
         */
-        app_send: res_len = send(sock, res_buf_top + res_len, res_len, 0);
+        app_send: ret = conn_ctx->process_res(res_buf_curr, &res_len, conn_ctx->app_data); 
+        
+        do {
+            len = send(sock, res_buf_curr, res_len, 0);
 
-        if (len == -1)
-        {
-            // TODO: handle errors...
-            perror("send");
-            exit(1);
-        }
+            if (len == -1)
+            {
+                // TODO: handle errors...
+                perror("send");
+                exit(1);
+            }
 
-        ret = conn_ctx->process_res(res_buf_top, res_len, conn_ctx->app_data);
+            res_buf_curr+=len;
+            res_len -= len;
+        } while (res_len > 0);
+
         if (ret == SB_APP_SEND)
         {
-            res_len = 0;
+            res_buf_curr = res_buf_top;
             goto app_send;
         } 
-        else if (ret == SB_APP_SEND_MORE)
-        {
-            goto app_send;
-        }
-        else if (ret == SB_APP_ERR)
+        else if (ret == SB_APP_ERR || ret == SB_APP_CONN_DONE)
         {
             // TODO: handle errors...
             break;
         }
-
-        // int ready_msg = SB_READY;
-        // len = write(conn_ctx->out_pipe, &ready_msg, sizeof(int));
-
-        // break;
     }
 
     close(conn_ctx->out_pipe);
@@ -212,7 +203,7 @@ static int sb_launch_thread(
     int i,
     int sock_fd, 
     struct sb_net_server_info *server_info,
-    int ( *process_req )(const char * req, const ssize_t req_len, char ** res, ssize_t * res_len, void * app_data),
+    int ( *process_req )(const char * req, const ssize_t req_len, void * app_data),
     int ( *process_res )(char * res, ssize_t res_len, void * app_data),
     int app_data_size
 )
@@ -376,8 +367,8 @@ struct sb_net_server_info * sb_net_server_info_setup(
 }
 
 int sb_net_accept_conn(struct sb_net_server_info * server_info, 
-                        int ( *process_req )(const char * req, const ssize_t req_len, char ** res, ssize_t * res_len, void * app_data),
-                        int ( *process_res )(char * res, ssize_t res_len, void * app_data),
+                        int ( *process_req )(const char * req, const ssize_t req_len, void * app_data),
+                        int ( *process_res )(char * res, ssize_t * res_len, void * app_data),
                         const int app_data_size)
 {
     int sock_fd = server_info->socket.sock_fd;
