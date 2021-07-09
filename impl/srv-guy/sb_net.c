@@ -3,15 +3,65 @@
 
 #define SB_DEFAULT_BUFFER 256
 
+str_t buffer_init()
+{
+    str_t str;
+    str.buffer = malloc(BUFFER_DEFAULT_LEN);
+    str.buf_len = BUFFER_DEFAULT_LEN;
+    str.data_len = 0;
+    return str;
+}
+
+void buffer_reset(str_t * str)
+{
+    if (str->buf_len == BUFFER_DEFAULT_LEN) return;
+
+    str->buffer = realloc(str->buffer, BUFFER_DEFAULT_LEN);
+    str->buf_len = BUFFER_DEFAULT_LEN;
+    str->data_len = 0;
+}
+
+void buffer_resize(str_t * str, ssize_t new_length)
+{
+    str->buffer = realloc(str->buffer, new_length);
+    str->buf_len = new_length;
+}
+
+
 /***********************************************************
  * Static functions: start
  **********************************************************/
+
+/**
+ * swap \p n bytes in \p a and \p b
+ * 
+ * \param[out] a an address
+ * \param[out] b an address
+ * \param[in] n the number of bytes to swap
+ */ 
 inline static void swap_n_bytes(void * a, void * b, int n)
 {
     unsigned char tmp[n];
     memcpy(tmp, a, n);
     memcpy(a, b, n);
     memcpy(b, &tmp, n);
+}
+
+/**
+ * this function takes a pointer to a struct thread_comm structure and swaps
+ * members of all three arrays at i and j. This function is necessary to keep pipes_in,
+ * pipes_out, and thread_ids always in alignment.
+ * 
+ * \param[out] a a thread_comm structure
+ * \param[in] i an index into the arrays belonging to \p a
+ * \param[in] j an index into the arrays belonging to \p a
+ * 
+ */ 
+inline static void swap_thread_comm_structs(struct thread_comm * a, int i, int j)
+{
+    swap_n_bytes(&a->pipes_in[i], &a->pipes_in[j], sizeof(struct pollfd));
+    swap_n_bytes(&a->pipes_out[i], &a->pipes_out[j], sizeof(struct pollfd));
+    swap_n_bytes(&a->thread_ids[i], &a->thread_ids[j], sizeof(pthread_t));
 }
 
 static void *get_in_addr(struct sockaddr *sa)
@@ -24,11 +74,11 @@ static void *get_in_addr(struct sockaddr *sa)
     return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
 
-static void safe_close(int socket)
+static void safe_close(int sock)
 {
     ssize_t len;
     int ret;
-    ret = shutdown(socket, SHUT_RDWR);
+    ret = shutdown(sock, SHUT_RDWR);
     if (ret == -1)
     {
         perror("safe_close - shutdown");
@@ -38,14 +88,14 @@ static void safe_close(int socket)
     int msg;
     while (1)
     {
-        len = read(socket, &msg, sizeof(int));
+        len = read(sock, &msg, sizeof(int));
         if ( (len==-1) || (len==0) )
         {
             break;
         }
     }
 
-    ret = close(socket);
+    ret = close(sock);
     if (ret==-1)
     {
         perror("safe_close - close");
@@ -66,12 +116,12 @@ static struct sb_net_handler_ctx * sb_setup_thread_pipes(struct sb_net_server_in
     struct sb_net_handler_ctx * ctx = malloc(sizeof(struct sb_net_handler_ctx)); 
 
     ctx->in_pipe = pipe_out[0];
-    server->pipes_out[threads_i].fd = pipe_out[1];
-    server->pipes_out[threads_i].events = POLLIN;
+    server->threads.pipes_out[threads_i].fd = pipe_out[1];
+    server->threads.pipes_out[threads_i].events = POLLIN;
 
     ctx->out_pipe = pipe_in[1];
-    server->pipes_in[threads_i].fd = pipe_in[0];
-    server->pipes_in[threads_i].events = POLLIN;
+    server->threads.pipes_in[threads_i].fd = pipe_in[0];
+    server->threads.pipes_in[threads_i].events = POLLIN;
 
     return ctx;
 }
@@ -87,80 +137,107 @@ static void * sb_net_thread(void * ctx)
     ssize_t len;
     int sock = conn_ctx->sock_fd;
 
+    str_t req = buffer_init(SB_DEFAULT_BUFFER);
+
+    ssize_t sent_len;
+    str_t res = buffer_init(SB_DEFAULT_BUFFER);
+
+    int ret;
+    int message;
+
     if (sock == -1)
     {
-        int ready_msg = SB_READY;
-        len = write(conn_ctx->out_pipe, &ready_msg, sizeof(int));
+        message = SB_READY;
+        len = write(conn_ctx->out_pipe, &message, sizeof(int));
         if (len == -1)
         {
             perror("sb_net_thread - write");
         }
+    }
+    else
+    {
+        //skip reading socket from pipe
+        goto app_recv;
+    }
 
-        len = read(conn_ctx->in_pipe, &conn_ctx->sock_fd, sizeof(int));
+    while (1){
+
+        len = read(conn_ctx->in_pipe, &message, sizeof(int));
         if (len == -1)
         {
+            //TODO: handle errors
             perror("sb_net_thread - read:");
             exit(0);
         }
-    }
 
-    size_t req_len = 0;
-    ssize_t req_buf_len = SB_DEFAULT_BUFFER;
-    char * req_buf_top = malloc(req_buf_len);
-    char * req_buf_curr = req_buf_top;
+        if (message > 0)
+        {
+            sock = message;
+        }
+        else 
+        {
+            if (message == SB_CLOSE)
+            {
+                goto thread_done;
+            }
+        }
 
-    ssize_t res_buf_len = SB_DEFAULT_BUFFER;
-    size_t res_len = res_buf_len;
-    char * res_buf_top = malloc(res_buf_len);
-    char * res_buf_curr = res_buf_top;
-
-    int ret;
-
-    while (1)
-    {
         /*
-         RECIEVE
+            RECIEVE
         */
-        app_recv: len = recv(sock, req_buf_curr, req_buf_len - req_len, 0);
-        req_len += len;
-
+        app_recv: len = recv(sock, req.buffer + req.data_len, req.buf_len - req.data_len, 0);
         if (len == -1)
         {
             // TODO: handle errors...
             perror("recv");
             exit(1);
         }
-        ret = conn_ctx->process_req(req_buf_curr, req_len, conn_ctx->app_data);
+        req.data_len += len;
+        ret = conn_ctx->process_req(&req, conn_ctx->app_data);
         
-        if (ret == SB_APP_RECV)
+        if (ret == SB_APP_FRESH_RECV)
         {
-            req_buf_curr = req_buf_top;
-            req_len = 0;
+            req.data_len = 0;
             goto app_recv;
         } 
         else if (ret == SB_APP_RECV_MORE)
         {
-            if (req_len > req_buf_len/2)
+            if (req.data_len > req.buf_len/2)
             {
-                req_buf_len = req_buf_len*2;
-                req_buf_top = realloc(req_buf_top, req_buf_len);
+                buffer_resize(&req, req.buf_len*2);
             }
-            req_buf_curr = req_buf_top + req_len;
             goto app_recv;
         }
-        else if (ret == SB_APP_ERR || ret == SB_APP_CONN_DONE)
+        else if (ret == SB_APP_SEND)
         {
-            // TODO: handle errors...
-            break;
+            buffer_reset(&req);
+            goto app_send;
+        }
+        else
+        {
+            if (ret == SB_APP_ERR)
+            {
+                buffer_reset(&req);
+                goto app_send;
+            }
+            else if (ret == SB_APP_FATAL_ERR)
+            {
+                goto conn_done;
+            }
+            else if (ret == SB_APP_CONN_DONE)
+            {
+                goto conn_done;
+            }
         }
         
         /*
-         SEND
+            SEND
         */
-        app_send: ret = conn_ctx->process_res(res_buf_curr, &res_len, conn_ctx->app_data); 
-        
+        app_send: ret = conn_ctx->process_res(&res, conn_ctx->app_data); 
+        sent_len = 0;
+
         do {
-            len = send(sock, res_buf_curr, res_len, 0);
+            len = send(sock, res.buffer + sent_len, res.data_len - sent_len, 0);
 
             if (len == -1)
             {
@@ -168,33 +245,48 @@ static void * sb_net_thread(void * ctx)
                 perror("send");
                 exit(1);
             }
-
-            res_buf_curr+=len;
-            res_len -= len;
-        } while (res_len > 0);
+            sent_len += len;
+        } while (sent_len < res.data_len);
 
         if (ret == SB_APP_SEND)
         {
-            res_buf_curr = res_buf_top;
             goto app_send;
         } 
-        else if (ret == SB_APP_ERR || ret == SB_APP_CONN_DONE)
+        else if (ret == SB_APP_FRESH_RECV)
         {
-            // TODO: handle errors...
-            break;
+            buffer_reset(&res);
+            goto app_recv;
         }
+        else
+        {
+            if (ret == SB_APP_ERR)
+            {
+                // TODO: handle errors...
+                goto conn_done;
+            }
+            else if (ret == SB_APP_CONN_DONE)
+            {
+                goto conn_done;
+            }
+        }
+        
+
+        conn_done:
+        //safely close connection
+        safe_close(sock);
+        buffer_reset(&res);
+        buffer_reset(&req);
+
     }
 
+    thread_done:
     close(conn_ctx->out_pipe);
     close(conn_ctx->in_pipe);
 
-    free(req_buf_top);
-    free(res_buf_top);
+    free(req.buffer);
+    free(res.buffer);
     free(ctx);
     free(conn_ctx->app_data);
-    
-    //safely close connection
-    safe_close(conn_ctx->sock_fd);
     
     return NULL;
 }
@@ -203,8 +295,8 @@ static int sb_launch_thread(
     int i,
     int sock_fd, 
     struct sb_net_server_info *server_info,
-    int ( *process_req )(const char * req, const ssize_t req_len, void * app_data),
-    int ( *process_res )(char * res, ssize_t res_len, void * app_data),
+    int ( *process_req )(str_t * req, void * app_data),
+    int ( *process_res )(str_t * res, void * app_data),
     int app_data_size
 )
 {
@@ -218,7 +310,7 @@ static int sb_launch_thread(
     ctx->process_req = process_req;
     ctx->process_res = process_res;
     ctx->app_data = calloc(app_data_size, sizeof(char));
-    ret = pthread_create(&server_info->thread_ids[i], NULL, sb_net_thread, ctx);
+    ret = pthread_create(&server_info->threads.thread_ids[i], NULL, sb_net_thread, ctx);
     if (ret != 0)
     {
         return SB_ERR_PTHREAD;
@@ -333,7 +425,6 @@ static int sb_net_socket_setup(struct socket_info * socket_info)
  * Static functions: end
  **********************************************************/
 
-
 struct sb_net_server_info * sb_net_server_info_setup(
     const char * port,
     const int addr_family,
@@ -367,8 +458,8 @@ struct sb_net_server_info * sb_net_server_info_setup(
 }
 
 int sb_net_accept_conn(struct sb_net_server_info * server_info, 
-                        int ( *process_req )(const char * req, const ssize_t req_len, void * app_data),
-                        int ( *process_res )(char * res, ssize_t * res_len, void * app_data),
+                        int ( *process_req )(str_t * req, void * app_data),
+                        int ( *process_res )(str_t * res, void * app_data),
                         const int app_data_size)
 {
     int sock_fd = server_info->socket.sock_fd;
@@ -385,15 +476,15 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
         perror("listen");
         return SB_ERR_LISTEN;
     }
-    printf("sb_net_accept_conn - server: waiting for connections...\n");
+    // printf("sb_net_accept_conn - server: waiting for connections...\n");
 
     //min threads setup;
     pthread_t thread_ids[server_info->max_handlers];
     struct pollfd pipes_in[server_info->max_handlers];
     struct pollfd pipes_out[server_info->max_handlers];
-    server_info->thread_ids = thread_ids;
-    server_info->pipes_in = pipes_in;
-    server_info->pipes_out = pipes_out;
+    server_info->threads.pipes_in = pipes_in;
+    server_info->threads.pipes_out = pipes_out;
+    server_info->threads.thread_ids = thread_ids;
 
     for (int i=0; i<server_info->min_handlers; i++)
     {    
@@ -408,23 +499,23 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
     
     int i;
     int ready;
-    int thread_count;
-    int pipe_count;
+    int pipes_ready_in = 0;
+    int threads_ready = 0;
     int msg;
+
     // wait half a second for incoming connections
-    struct timeval accept_timeout;
-    accept_timeout.tv_sec = 0;
-    accept_timeout.tv_usec = 500000;
-    fd_set sock_select;
-    FD_ZERO(&sock_select);
-    FD_SET(sock_fd, &sock_select);
+    struct pollfd sock;
+    sock.fd = sock_fd;
+    sock.events = POLLIN;
+    int timeout = 500;
+    
 
     // int thread_err;
     while(1)
     /*
     When accept is called and conn_fd is set, send conn_fd as a pipe argument
     */
-    {
+    {   
         //iterate over ready polls--check for POLLIN
         //if POLLIN, read from pipe--if ready, keep array of ready threads
         //array of ready threads might have to be a seperate list of those threads that are ready.
@@ -434,27 +525,23 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
         /**
          * see which pipes can be read from--put all ready in front of pollfds
         */
-        i = 0;
-        ready = poll(pipes_in, server_info->len, 0);
-        pipe_count = 0;
-        while (pipe_count < ready)
+        i = threads_ready;
+        ready = 0;
+        pipes_ready_in = poll(pipes_in + threads_ready, server_info->len - threads_ready, 0);
+        while (ready < pipes_ready_in)
         {
             if (pipes_in[i].revents & POLLIN){
-                swap_n_bytes(&pipes_in[i], &pipes_in[pipe_count], sizeof(struct pollfd));
-                swap_n_bytes(&pipes_out[i], &pipes_out[pipe_count], sizeof(struct pollfd));
-                swap_n_bytes(&thread_ids[i], &thread_ids[pipe_count], sizeof(pthread_t));
-                pipe_count++;
+                swap_thread_comm_structs(&server_info->threads, i, threads_ready+ready);
+                ready++;
             }
             i++;
         } 
 
         //read from each ready pipe to see which thread sent the 
         // "I'm ready" message (SB_READY)
-        i=0;
-        ready = pipe_count;
-        thread_count = 0;
-        // thread_err = 0;
-        while (i<ready)
+        i = threads_ready;
+        ready = 0;
+        while (ready < pipes_ready_in)
         {
             len = read(pipes_in[i].fd, &msg, sizeof(int));
             if (len == -1)
@@ -466,25 +553,25 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
 
             if (msg == SB_READY)
             {
-                swap_n_bytes(&pipes_in[i], &pipes_in[thread_count], sizeof(struct pollfd));
-                swap_n_bytes(&pipes_out[i], &pipes_out[thread_count], sizeof(struct pollfd));
-                swap_n_bytes(&thread_ids[i], &thread_ids[thread_count], sizeof(pthread_t));
-                thread_count++;
+                swap_thread_comm_structs(&server_info->threads, i, threads_ready);
+                threads_ready++;
+                ready++;
             }
             i++;
         }
 
-        if (thread_count != pipe_count)
+        if (threads_ready != pipes_ready_in)
         {
             //TODO: handle errors
             //if above condition is true, a thread sent a message other than SB_READY
         }
 
-        while (thread_count || server_info->len<server_info->max_handlers)
+        while (threads_ready || server_info->len<server_info->max_handlers)
         {
-            int incoming_conn = select(1, &sock_select, NULL, NULL, &accept_timeout);
+            int incoming_conn = poll(&sock, 1, timeout);
+            // printf("thread_count: %d, incoming_conn: %d\n", threads_ready, incoming_conn);
 
-            if (incoming_conn > 0)
+            if (incoming_conn > 0 && sock.revents & POLLIN)
             { 
                 sin_size = sizeof(client_addr);
                 conn_fd = accept(sock_fd, (struct sockaddr *)&client_addr, &sin_size);
@@ -495,18 +582,20 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
                     continue;
                 }
 
-                if (errno == EWOULDBLOCK)
-                {
-                    //stop accepting on timeout and continue with event loop
-                    break;
-                }
 
                 inet_ntop(client_addr.ss_family, get_in_addr((struct sockaddr *)&client_addr), s, sizeof(s) );
-                printf("sb_net_accept_conn - server: got connection from %s\n", s);
+                // printf("sb_net_accept_conn - server: got connection from %s\n", s);
 
-                if (thread_count==0) 
+                if (threads_ready==0) 
                 {
-                    if (server_info->len<server_info->max_handlers)
+                    // printf("\nbusy or new thread: %d, %d, %d, %d, %d", 
+                    //     server_info->len, 
+                    //     server_info->current_thread, 
+                    //     threads_ready,
+                    //     conn_fd,
+                    //     pipes_out[threads_ready-1].fd);
+
+                    if (server_info->len < server_info->max_handlers)
                     {
                         if (sb_launch_thread(server_info->len, conn_fd, server_info, process_req, process_res, app_data_size) != 0)
                         {
@@ -533,8 +622,15 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
                 {
                     //pass connections to pipes_out (pass to ready_threads-1);
                     //decrement ready_threads
-                    len = write(pipes_out[thread_count-1].fd, &conn_fd, sizeof(int));
-                    thread_count--;
+                    // printf("\nexisting thread: %d, %d, %d, %d, %d", 
+                    //     server_info->len, 
+                    //     server_info->current_thread, 
+                    //     threads_ready,
+                    //     conn_fd,
+                    //     pipes_out[threads_ready-1].fd);
+
+                    len = write(pipes_out[threads_ready-1].fd, &conn_fd, sizeof(int));
+                    threads_ready--;
                     if (len == -1)
                     {
                         //TODO: handle errors
@@ -546,11 +642,14 @@ int sb_net_accept_conn(struct sb_net_server_info * server_info,
             else if (incoming_conn == -1)
             {
                 //TODO: handle errors
-                perror("select");
+                perror("poll");
                 exit(1);
             }
             else 
             {
+                /*
+                    a timeout occurred on poll()
+                */
                 break;
             }
         }

@@ -1,9 +1,8 @@
 OBJDIR = test
 dummy_build_folder := $(shell mkdir -p $(OBJDIR))
 
-CFLAGS  += -pthread -I. -D_FILE_OFFSET_BITS=64 -Wall
+CFLAGS  += -DDEBUG -g -pthread -I. -D_FILE_OFFSET_BITS=64 -Wall
 OFLAGS  = -O0
-
 
 all: $(OBJDIR)/test
 

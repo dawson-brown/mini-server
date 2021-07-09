@@ -6,6 +6,19 @@
 #include <poll.h>
 #include <fcntl.h>
 
+#define BUFFER_DEFAULT_LEN 256
+
+typedef struct str {
+    char * buffer;
+    ssize_t buf_len;
+    ssize_t data_len;
+} str_t;
+
+str_t buffer_init();
+
+void buffer_reset(str_t * str);
+
+void buffer_resize(str_t * str, ssize_t new_length);
 
 enum sb_net_returns
 {
@@ -27,10 +40,11 @@ enum sb_net_pipe_msgs
 };
 
 enum sb_net_app_flags {
-    SB_APP_RECV, //this indicates a 'fresh' recv--whats been recieved can be overwritten
+    SB_APP_FRESH_RECV, //this indicates a 'fresh' recv--whats been recieved can be overwritten
     SB_APP_RECV_MORE, //this indicates that whats recieved next should be appended to
     SB_APP_SEND,
-    SB_APP_ERR, // this is an error
+    SB_APP_ERR, // this is an error that the application will deal with
+    SB_APP_FATAL_ERR, // this is an error that forces a closure of the connection
     SB_APP_CONN_DONE,
     /* TODO: figure out the proper return flags.
     maybe make them powers of 2 to be ORed together? */
@@ -47,6 +61,12 @@ struct socket_info
     int addr_flags; 
 };
 
+struct thread_comm {
+    pthread_t * thread_ids;
+    struct pollfd * pipes_in;
+    struct pollfd * pipes_out;
+};
+
 struct sb_net_server_info
 {
     struct socket_info socket;
@@ -55,9 +75,7 @@ struct sb_net_server_info
     int max_handlers;
     int len;
     int current_thread;
-    pthread_t * thread_ids;
-    struct pollfd * pipes_in;
-    struct pollfd * pipes_out;
+    struct thread_comm threads;
 };
 
 struct sb_net_handler_ctx
@@ -71,10 +89,11 @@ struct sb_net_handler_ctx
      * the user defined application layer.
      */
     void * app_data; 
-    int ( *process_req )(const char * req, const ssize_t req_len, void * app_data);
-    int ( *process_res )(char * res, ssize_t * res_len, void * app_data);
+    int ( *process_req )(str_t * req, void * app_data);
+    int ( *process_res )(str_t * res, void * app_data);
 };
 
+#ifndef MINUNIT_MINUNIT_H
 struct sb_net_server_info * sb_net_server_info_setup(
     const char * port,
     const int addr_family,
@@ -86,6 +105,7 @@ struct sb_net_server_info * sb_net_server_info_setup(
 );
 
 int sb_net_accept_conn(struct sb_net_server_info * server_info, 
-                        int ( *process_req )(const char * req, const ssize_t req_len, void * app_data),
-                        int ( *process_res )(char * res, ssize_t * res_len, void * app_data),
+                        int ( *process_req )(str_t * req, void * app_data),
+                        int ( *process_res )(str_t * res, void * app_data),
                         const int app_data_size);
+#endif
