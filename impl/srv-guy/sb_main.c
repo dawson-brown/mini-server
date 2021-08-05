@@ -20,17 +20,17 @@ int sb_res(str_t *res, void *app_data)
 
 int main(int argc, char **argv)
 {
-    struct sb_net_server_info *server_info = sb_net_server_info_setup(
-        SB_PORT,
-        AF_UNSPEC,
-        AI_PASSIVE,
-        SOCK_STREAM,
-        2,
-        4,
-        3);
+    // struct sb_net_server_info *server_info = sb_net_server_info_setup(
+    //     SB_PORT,
+    //     AF_UNSPEC,
+    //     AI_PASSIVE,
+    //     SOCK_STREAM,
+    //     2,
+    //     4,
+    //     3);
 
-    sb_net_accept_conn(server_info, sb_req, sb_res, 32);
+    // sb_net_accept_conn(server_info, sb_req, sb_res, 32);
 
-    free(server_info);
-    return 0;
+    // free(server_info);
+    // return 0;
 }

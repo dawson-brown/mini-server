@@ -40,12 +40,9 @@ enum sb_net_pipe_msgs
 };
 
 enum sb_net_app_flags {
-    SB_APP_FRESH_RECV, //this indicates a 'fresh' recv--whats been recieved can be overwritten
-    SB_APP_RECV_MORE, //this indicates that whats recieved next should be appended to
+    SB_APP_RECV,
     SB_APP_SEND,
-    SB_APP_ERR, // this is an error that the application will deal with
-    SB_APP_FATAL_ERR, // this is an error that forces a closure of the connection
-    SB_APP_CONN_DONE,
+    SB_APP_CONN_DONE
     /* TODO: figure out the proper return flags.
     maybe make them powers of 2 to be ORed together? */
 };
@@ -89,7 +86,7 @@ struct sb_net_handler_ctx
      * the user defined application layer.
      */
     void * app_data; 
-    int ( *process_req )(str_t * req, void * app_data);
+    int ( *process_req )(str_t req, void * app_data);
     int ( *process_res )(str_t * res, void * app_data);
 };
 
@@ -105,7 +102,8 @@ struct sb_net_server_info * sb_net_server_info_setup(
 );
 
 int sb_net_accept_conn(struct sb_net_server_info * server_info, 
-                        int ( *process_req )(str_t * req, void * app_data),
+                        int ( *process_req )(str_t req, void * app_data),
                         int ( *process_res )(str_t * res, void * app_data),
+                        void ( *init_app_data)(void * app_data),
                         const int app_data_size);
 #endif

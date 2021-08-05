@@ -2,21 +2,14 @@
 
 #include "sb_net.c"
 
-void test_setup(void) {
-    /* TODO */
-}
+/***********************************
+ * Helpers: start
+ **********************************/ 
 
-
-void test_teardown(void) {
-	/* TODO */
-}
-
-MU_TEST(test_sb_net_socket_setup) {
-    /* TODO */
-	mu_check(0 == 0);
-}
-
+#define BUF_LEN 64
 struct app_t {
+	char buffer[BUF_LEN];
+	int req_len;
 	int request;
 	int sent_count;
 };
@@ -28,31 +21,6 @@ enum app_t_requests{
 	APP_GET_3_INT,
 	APP_ERR
 };
-
-static int test_mini_req_processor(
-	str_t * req, 
-	void * app_data)
-{
-	if (req->buffer[req->data_len-1] == '\n' && req->buffer[req->data_len-2] == '\n'){
-		struct app_t * app = (struct app_t *) app_data;
-		app->sent_count = 0;
-		if (memcmp(req->buffer, "GET DOUBLE", 10) == 0){
-			app->request = APP_GET_DOUBLE;
-		} else if (memcmp(req->buffer, "GET INT", 7) == 0){
-			app->request = APP_GET_INT;
-		} else if (memcmp(req->buffer, "GET 3 INT", 9) == 0){
-			app->request = APP_GET_3_INT;
-		} else if (memcmp(req->buffer, "GET 3 DOUBLE", 12) == 0){
-			app->request = APP_GET_3_DOUBLE;
-		} else {
-			app->request = APP_ERR;
-			return SB_APP_ERR;
-		}
-		return SB_APP_SEND;
-	} else {
-		return SB_APP_RECV_MORE;
-	}
-}
 
 static int test_mini_res_processor(
 	str_t * res, 
@@ -97,8 +65,6 @@ static int test_mini_res_processor(
 		} else {
 			return SB_APP_SEND;
 		}
-
-
 	}
 
 	if (app->request == APP_ERR){
@@ -108,19 +74,66 @@ static int test_mini_res_processor(
 		return SB_APP_CONN_DONE;
 	}
 
-	return SB_APP_FATAL_ERR;
+	return SB_APP_CONN_DONE;
+}
+
+static int test_mini_req_processor(
+	str_t req, 
+	void * app_data)
+{
+	struct app_t * app = (struct app_t *) app_data;
+	memcpy(app->buffer + app->req_len, req.buffer, req.data_len);
+	app->req_len += req.data_len;
+
+	if (app->buffer[app->req_len-1] == '\n' && app->buffer[app->req_len-2] == '\n')
+	{
+		if (memcmp(app->buffer, "GET DOUBLE", 10) == 0){
+			app->request = APP_GET_DOUBLE;
+		} else if (memcmp(app->buffer, "GET INT", 7) == 0){
+			app->request = APP_GET_INT;
+		} else if (memcmp(app->buffer, "GET 3 INT", 9) == 0){
+			app->request = APP_GET_3_INT;
+		} else if (memcmp(app->buffer, "GET 3 DOUBLE", 12) == 0){
+			app->request = APP_GET_3_DOUBLE;
+		} else if (memcmp(app->buffer, "DONE", 4) == 0){
+			return SB_APP_CONN_DONE;
+		} else {
+			app->request = APP_ERR;
+		}
+		return SB_APP_SEND;
+	} 
+	else 
+	{
+		return SB_APP_RECV;
+	}
+}
+
+static void test_init_app_data(void * data)
+{
+	struct app_t * app = (struct app_t *) data;
+	app->req_len = 0;
+	app->sent_count = 0;
 }
 
 void * test_mini_server(void * server_ctx){
 	struct sb_net_server_info * srv_ctx = (struct sb_net_server_info *) server_ctx;
-	sb_net_accept_conn(srv_ctx, test_mini_req_processor, test_mini_res_processor, 0);
+	sb_net_accept_conn(srv_ctx, test_mini_req_processor, test_mini_res_processor, test_init_app_data, sizeof(struct app_t));
 	return NULL;
 }
 
+/***********************************
+ * Helpers: end
+ **********************************/ 
+
 #define TEST_PORT "8080"
 #define TEST_ADDR "127.0.0.1"
-MU_TEST(test_mini_server_instance){
-	struct sb_net_server_info * server_info = sb_net_server_info_setup(
+
+struct sb_net_server_info * server_info;
+struct sockaddr_in serv_addr;
+
+void suite_setup(void) {
+    
+	server_info = sb_net_server_info_setup(
 		TEST_PORT,
 		AF_UNSPEC,
 		AI_PASSIVE,
@@ -130,25 +143,37 @@ MU_TEST(test_mini_server_instance){
 		3
 	);
 
-
-
-	//server address
-	struct sockaddr_in serv_addr;
-	serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(atoi(TEST_PORT));
-	mu_assert(inet_pton(AF_INET, TEST_ADDR, &serv_addr.sin_addr)>=0, "Invalid address/ Address not supported");
+	mu_assert(server_info != NULL, "sb_net_server_info_setup failed to setup server.");
 
 	pthread_t server_thread;
 	pthread_create(&server_thread, NULL, test_mini_server, server_info);
 
-	sleep(2);
+	serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(atoi(TEST_PORT));
+
+}
 
 
+void suite_teardown(void) {
 
-	mu_assert(server_info->max_handlers == 4, "server_info->max_handlers == 4");
-	mu_assert(server_info->min_handlers == 3, "server_info->min_handlers == 3");
-	mu_assert(server_info->current_thread == 0, "server_info->current_thread == 0");
+}
 
+void test_setup(void) {
+	//TODO
+}
+
+
+void test_teardown(void) {
+	//TODO
+}
+
+MU_TEST(test_sb_net_socket_setup) {
+    /* TODO */
+	mu_check(0 == 0);
+}
+
+MU_TEST(test_mini_server_sessions){
+	
 	double recv1=0;
 	int recv2=0;
 	int recv3=0;
@@ -214,11 +239,7 @@ MU_TEST(test_mini_server_instance){
 
 	recv(sockfd_5, &recv5, sizeof(int), 0);
 	mu_assert(recv5 == -1, "recv5 == -1");
-
-	sleep(1);
-	mu_assert(server_info->len==3, "server_info->len==3");
-
-	free(server_info);
+	
 }
 
 
@@ -239,12 +260,14 @@ MU_TEST_SUITE(sb_net_test_suite) {
 	MU_RUN_TEST(test_sb_net_socket_setup);
 	MU_RUN_TEST(test_get_in_addr);
 	MU_RUN_TEST(test_safe_close);
-	MU_RUN_TEST(test_mini_server_instance);
+	MU_RUN_TEST(test_mini_server_sessions);
 }
 
 int main(int argc, char *argv[]) {
+	suite_setup();
 	MU_RUN_SUITE(sb_net_test_suite);
 	MU_REPORT();
+	suite_teardown();
 	return MU_EXIT_CODE;
 }
 
